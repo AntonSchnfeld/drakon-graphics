@@ -1,0 +1,7 @@
+**/target/
+/.validation/
+/out/
+/migration-verify.log
+/docs/
+/.idea/
+AGENTS.md

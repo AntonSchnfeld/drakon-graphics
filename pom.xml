@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        Repository build aggregator only.
+
+        The child projects do NOT inherit from this POM.
+        This artifact is not part of the public drakon-graphics API.
+    -->
+    <groupId>io.github.antonschnfeld</groupId>
+    <artifactId>drakon-graphics-build</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>drakon-graphics build</name>
+
+    <properties>
+        <maven.deploy.skip>true</maven.deploy.skip>
+    </properties>
+
+    <modules>
+        <module>drakon-graphics</module>
+        <module>backends/drakon-graphics-opengl</module>
+        <module>backends/drakon-graphics-vulkan</module>
+        <module>spike</module>
+    </modules>
+
+</project>

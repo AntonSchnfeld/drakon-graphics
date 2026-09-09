@@ -1,0 +1,169 @@
+package io.github.antonschnfeld.drakon.graphics.contract;
+
+import io.github.antonschnfeld.drakon.graphics.backend.*;
+import io.github.antonschnfeld.drakon.graphics.command.*;
+import io.github.antonschnfeld.drakon.graphics.pipeline.*;
+import io.github.antonschnfeld.drakon.graphics.backend.GraphicsBackend;
+import io.github.antonschnfeld.drakon.graphics.backend.GraphicsBackends;
+import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
+import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
+import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPass;
+import io.github.antonschnfeld.drakon.graphics.probe.ProbePresentationTargets;
+import io.github.antonschnfeld.drakon.graphics.render.Renderer;
+import io.github.antonschnfeld.drakon.graphics.resource.*;
+import io.github.antonschnfeld.drakon.graphics.shader.*;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public final class ApiContractChecks {
+    private ApiContractChecks() {}
+
+    public static void run() {
+        checkPortableDepthState();
+        checkPipelineSnapshot();
+        checkShaderValueContracts();
+        checkBackendContracts("opengl");
+        checkBackendContracts("vulkan");
+    }
+
+    private static void checkPortableDepthState() {
+        expect(IllegalArgumentException.class,
+                () -> new DepthState(false, true, CompareOp.ALWAYS));
+    }
+
+    private static void checkPipelineSnapshot() {
+        try (GraphicsDevice device = GraphicsBackends.require("opengl")
+                .createDevice(GraphicsDeviceConfig.defaults())) {
+            List<RenderPass> mutable = new ArrayList<>();
+            AtomicInteger recorded = new AtomicInteger();
+
+            mutable.add(commands -> {
+                recorded.incrementAndGet();
+                mutable.clear();
+            });
+            mutable.add(commands -> recorded.incrementAndGet());
+
+            new Renderer(device).execute(() -> mutable);
+            if (recorded.get() != 2) {
+                throw new AssertionError("Renderer must snapshot pipeline passes before recording");
+            }
+        }
+    }
+
+
+    private static void checkShaderValueContracts() {
+        expect(IllegalArgumentException.class,
+                () -> new ShaderDescriptor(ShaderStage.VERTEX, "   ", new GlslShaderCode("void main() {}")));
+        expect(IllegalArgumentException.class,
+                () -> new SpirvShaderCode(ByteBuffer.allocate(3)));
+
+        ByteBuffer input = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+        input.putInt(0x07230203).putInt(0x00010600).flip();
+        int inputPosition = input.position();
+        SpirvShaderCode code = new SpirvShaderCode(input);
+        if (input.position() != inputPosition) {
+            throw new AssertionError("SpirvShaderCode must not consume the caller's buffer");
+        }
+        ByteBuffer firstView = code.code();
+        firstView.getInt();
+        if (code.code().position() != 0 || !code.code().isReadOnly()) {
+            throw new AssertionError("SpirvShaderCode must expose independent read-only views");
+        }
+    }
+
+    private static void checkBackendContracts(String backendId) {
+        GraphicsBackend backend = GraphicsBackends.require(backendId);
+
+        try (GraphicsDevice first = backend.createDevice(GraphicsDeviceConfig.debug());
+             GraphicsDevice second = backend.createDevice(GraphicsDeviceConfig.debug())) {
+
+            ShaderCode glsl = new GlslShaderCode("void main() {}");
+            ByteBuffer spirvBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+            spirvBytes.putInt(0x07230203).flip();
+            ShaderCode spirv = new SpirvShaderCode(spirvBytes);
+
+            if (backendId.equals("opengl")) {
+                if (!(first.shaderTarget() instanceof OpenGLShaderTarget)
+                        || !first.shaderTarget().accepts(glsl)
+                        || first.shaderTarget().accepts(spirv)) {
+                    throw new AssertionError("OpenGL probe must advertise a GLSL-only target");
+                }
+                expect(IllegalArgumentException.class, () -> first.createShader(
+                        new ShaderDescriptor(ShaderStage.VERTEX, "main", spirv)));
+            } else if (backendId.equals("vulkan")) {
+                if (!(first.shaderTarget() instanceof VulkanShaderTarget)
+                        || first.shaderTarget().accepts(glsl)
+                        || !first.shaderTarget().accepts(spirv)) {
+                    throw new AssertionError("Vulkan probe must advertise a SPIR-V target");
+                }
+                expect(IllegalArgumentException.class, () -> first.createShader(
+                        new ShaderDescriptor(ShaderStage.VERTEX, "main", glsl)));
+            }
+
+            Buffer foreign = first.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.VERTEX)));
+            CommandEncoder secondEncoder = second.createCommandEncoder();
+            expect(IllegalArgumentException.class,
+                    () -> secondEncoder.setVertexBuffer(0, foreign, 0));
+
+            Texture color = second.createTexture(new TextureDescriptor(
+                    16, 16, TextureFormat.RGBA8_UNORM,
+                    Set.of(TextureUsage.COLOR_ATTACHMENT, TextureUsage.COPY_SRC)));
+            RenderTarget target = second.createRenderTarget(new RenderTargetDescriptor(List.of(color), null));
+            if (!target.colorFormats().equals(List.of(TextureFormat.RGBA8_UNORM))
+                    || target.depthFormat() != null) {
+                throw new AssertionError("render target must expose compatibility formats, not attachments");
+            }
+            expect(IllegalArgumentException.class, () -> second.present(target));
+
+            RenderTarget presentationTarget = ProbePresentationTargets.create(
+                    second, 1280, 720, List.of(TextureFormat.RGBA8_UNORM), null);
+            second.present(presentationTarget);
+
+            CommandEncoder presentationEncoder = second.createCommandEncoder();
+            presentationEncoder.beginRendering(RenderingInfo.builder(presentationTarget)
+                    .color(ColorAttachmentOps.clear(Color.BLACK))
+                    .build());
+            presentationEncoder.endRendering();
+            second.submit(presentationEncoder.finish());
+            second.present(presentationTarget);
+
+            CommandEncoder scopeEncoder = second.createCommandEncoder();
+            scopeEncoder.transition(color, ResourceState.UNDEFINED, ResourceState.COLOR_ATTACHMENT_WRITE);
+            scopeEncoder.beginRendering(RenderingInfo.builder(target)
+                    .color(ColorAttachmentOps.clear(Color.BLACK))
+                    .build());
+            expect(IllegalStateException.class,
+                    () -> scopeEncoder.transition(color,
+                            ResourceState.COLOR_ATTACHMENT_WRITE,
+                            ResourceState.COPY_SRC));
+            scopeEncoder.endRendering();
+
+            CommandEncoder oneShotEncoder = second.createCommandEncoder();
+            oneShotEncoder.transition(color,
+                    ResourceState.COLOR_ATTACHMENT_WRITE,
+                    ResourceState.COPY_SRC);
+            CommandList oneShot = oneShotEncoder.finish();
+            second.submit(oneShot);
+            expect(IllegalArgumentException.class, () -> second.submit(oneShot));
+
+            Texture mismatched = second.createTexture(new TextureDescriptor(
+                    8, 8, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.COPY_DST)));
+            CommandEncoder copyEncoder = second.createCommandEncoder();
+            copyEncoder.transition(mismatched, ResourceState.UNDEFINED, ResourceState.COPY_DST);
+            expect(IllegalArgumentException.class, () -> copyEncoder.copyTexture(color, mismatched));
+        }
+    }
+
+    private static void expect(Class<? extends Throwable> type, Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable throwable) {
+            if (type.isInstance(throwable)) return;
+            throw new AssertionError("Expected " + type.getSimpleName() + " but got " + throwable, throwable);
+        }
+        throw new AssertionError("Expected " + type.getSimpleName() + " but no exception was thrown");
+    }
+}

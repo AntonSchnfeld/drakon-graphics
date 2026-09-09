@@ -1,0 +1,181 @@
+package io.github.antonschnfeld.drakon.graphics.spike;
+
+import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
+import io.github.antonschnfeld.drakon.graphics.command.Color;
+import io.github.antonschnfeld.drakon.graphics.command.ColorAttachmentOps;
+import io.github.antonschnfeld.drakon.graphics.command.RenderingInfo;
+import io.github.antonschnfeld.drakon.graphics.opengl.OpenGLBackend;
+import io.github.antonschnfeld.drakon.graphics.opengl.OpenGLDevice;
+import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
+import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPass;
+import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPipeline;
+import io.github.antonschnfeld.drakon.graphics.render.Renderer;
+import io.github.antonschnfeld.drakon.graphics.resource.GraphicsState;
+import io.github.antonschnfeld.drakon.graphics.resource.GraphicsStateDescriptor;
+import io.github.antonschnfeld.drakon.graphics.resource.RenderTarget;
+import io.github.antonschnfeld.drakon.graphics.resource.Shader;
+import io.github.antonschnfeld.drakon.graphics.resource.ShaderStage;
+import io.github.antonschnfeld.drakon.graphics.shader.GlslShaderCode;
+import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
+import io.github.antonschnfeld.drakon.graphics.shader.SpirvShaderCode;
+import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanBackend;
+import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanDevice;
+import org.lwjgl.system.MemoryUtil;
+
+import java.nio.ByteBuffer;
+import java.util.Locale;
+
+import static org.lwjgl.util.shaderc.Shaderc.*;
+
+/**
+ * Executable real-backend smoke test for the backend spike.
+ *
+ * <p>The program deliberately uses only the portable rendering API after each
+ * backend-specific window bootstrap. Shaderc appears here only to produce the
+ * SPIR-V that a future {@code drakon-shaders} module would normally provide.</p>
+ */
+public final class BackendSpikeMain {
+    private static final String VERTEX_GLSL = """
+            #version 450
+            layout(location = 0) out vec3 color;
+            // Counter-clockwise clip-space winding matches RasterState.standard().
+            const vec2 positions[3] = vec2[](
+                vec2(-0.65,  0.55),
+                vec2( 0.00, -0.65),
+                vec2( 0.65,  0.55)
+            );
+            const vec3 colors[3] = vec3[](
+                vec3(1.0, 0.2, 0.2),
+                vec3(0.2, 0.4, 1.0),
+                vec3(0.2, 1.0, 0.2)
+            );
+            void main() {
+                gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+                color = colors[gl_VertexIndex];
+            }
+            """;
+
+    private static final String OPENGL_VERTEX_GLSL = VERTEX_GLSL.replace("gl_VertexIndex", "gl_VertexID");
+
+    private static final String FRAGMENT_GLSL = """
+            #version 450
+            layout(location = 0) in vec3 color;
+            layout(location = 0) out vec4 outColor;
+            void main() {
+                outColor = vec4(color, 1.0);
+            }
+            """;
+
+    private BackendSpikeMain() {}
+
+    /**
+     * Runs one or both windowed backend smoke tests.
+     *
+     * @param args optional {@code opengl}, {@code vulkan}, or {@code both};
+     *             default is {@code both}
+     */
+    public static void main(String[] args) {
+        String backend = args.length == 0 ? "both" : args[0].toLowerCase(Locale.ROOT);
+        switch (backend) {
+            case "opengl" -> runOpenGL();
+            case "vulkan" -> runVulkan();
+            case "both" -> {
+                runOpenGL();
+                runVulkan();
+            }
+            default -> throw new IllegalArgumentException("expected opengl, vulkan, or both");
+        }
+    }
+
+    private static void runOpenGL() {
+        OpenGLBackend backend = new OpenGLBackend();
+        try (OpenGLDevice device = backend.createWindowedDevice(
+                GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics OpenGL spike")) {
+            Shader vertex = device.createShader(new ShaderDescriptor(
+                    ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
+            Shader fragment = device.createShader(new ShaderDescriptor(
+                    ShaderStage.FRAGMENT, "main", new GlslShaderCode(FRAGMENT_GLSL)));
+            runWindowLoop(device, device.defaultRenderTarget(), vertex, fragment, device::shouldClose, device::pollEvents);
+        }
+    }
+
+    private static void runVulkan() {
+        VulkanBackend backend = new VulkanBackend();
+        try (VulkanDevice device = backend.createWindowedDevice(
+                GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics Vulkan spike")) {
+            Shader vertex = device.createShader(new ShaderDescriptor(
+                    ShaderStage.VERTEX, "main",
+                    new SpirvShaderCode(compileSpirv(VERTEX_GLSL, shaderc_glsl_vertex_shader))));
+            Shader fragment = device.createShader(new ShaderDescriptor(
+                    ShaderStage.FRAGMENT, "main",
+                    new SpirvShaderCode(compileSpirv(FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
+            runWindowLoop(device, device.defaultRenderTarget(), vertex, fragment, device::shouldClose, device::pollEvents);
+        }
+    }
+
+    private static void runWindowLoop(
+            GraphicsDevice device,
+            RenderTarget target,
+            Shader vertex,
+            Shader fragment,
+            BooleanSupplier shouldClose,
+            Runnable pollEvents) {
+        GraphicsState state = device.createGraphicsState(
+                GraphicsStateDescriptor.builder()
+                        .vertexShader(vertex)
+                        .fragmentShader(fragment)
+                        .colorFormat(target.colorFormats().get(0))
+                        .build());
+        Renderer renderer = new Renderer(device);
+
+        while (!shouldClose.getAsBoolean()) {
+            // RenderingInfo is rebuilt because a presentation-backed target can
+            // change extent after a resize while retaining the same Java object.
+            RenderPass pass = commands -> {
+                commands.beginRendering(RenderingInfo.builder(target)
+                        .color(ColorAttachmentOps.clear(new Color(0.03f, 0.04f, 0.06f, 1.0f)))
+                        .build());
+                commands.setGraphicsState(state);
+                commands.draw(3, 1, 0, 0);
+                commands.endRendering();
+            };
+            renderer.execute(RenderPipeline.of(pass));
+            device.present(target);
+            pollEvents.run();
+        }
+    }
+
+    /** Compiles GLSL solely for the Vulkan smoke harness, not the backend. */
+    private static ByteBuffer compileSpirv(String source, int kind) {
+        long compiler = shaderc_compiler_initialize();
+        if (compiler == MemoryUtil.NULL) throw new IllegalStateException("shaderc_compiler_initialize failed");
+        long options = shaderc_compile_options_initialize();
+        if (options == MemoryUtil.NULL) {
+            shaderc_compiler_release(compiler);
+            throw new IllegalStateException("shaderc_compile_options_initialize failed");
+        }
+        shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
+        long result = shaderc_compile_into_spv(compiler, source, kind, "backend-spike.glsl", "main", options);
+        try {
+            if (result == MemoryUtil.NULL) throw new IllegalStateException("shaderc_compile_into_spv failed");
+            int status = shaderc_result_get_compilation_status(result);
+            if (status != shaderc_compilation_status_success) {
+                throw new IllegalArgumentException("shaderc failed: " + shaderc_result_get_error_message(result));
+            }
+            ByteBuffer bytes = shaderc_result_get_bytes(result);
+            if (bytes == null) throw new IllegalStateException("shaderc returned no SPIR-V bytes");
+            ByteBuffer copy = ByteBuffer.allocateDirect(bytes.remaining());
+            copy.put(bytes).flip();
+            return copy.asReadOnlyBuffer();
+        } finally {
+            if (result != MemoryUtil.NULL) shaderc_result_release(result);
+            shaderc_compile_options_release(options);
+            shaderc_compiler_release(compiler);
+        }
+    }
+
+    @FunctionalInterface
+    private interface BooleanSupplier {
+        boolean getAsBoolean();
+    }
+}
