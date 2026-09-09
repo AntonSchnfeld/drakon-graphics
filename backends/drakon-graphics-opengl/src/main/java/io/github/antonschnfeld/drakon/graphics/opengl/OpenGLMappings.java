@@ -3,6 +3,7 @@ package io.github.antonschnfeld.drakon.graphics.opengl;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 
 import static org.lwjgl.opengl.GL11C.*;
+import static org.lwjgl.opengl.GL12C.GL_BGRA;
 import static org.lwjgl.opengl.GL20C.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL31C.GL_UNIFORM_BUFFER;
@@ -20,7 +21,11 @@ final class OpenGLMappings {
     }
 
     static int textureExternalFormat(TextureFormat format) {
-        return format.isDepth() ? GL_DEPTH_COMPONENT : GL_RGBA;
+        return switch (format) {
+            case RGBA8_UNORM, RGBA16_FLOAT -> GL_RGBA;
+            case BGRA8_UNORM -> GL_BGRA;
+            case D32_FLOAT -> GL_DEPTH_COMPONENT;
+        };
     }
 
     static int textureExternalType(TextureFormat format) {

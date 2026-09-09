@@ -755,10 +755,8 @@ public final class VulkanDevice implements GraphicsDevice {
                 if (initialData != null && initialData.hasRemaining()) {
                     PointerBuffer mapped = stack.mallocPointer(1);
                     check(vkMapMemory(device, memory, 0, descriptor.size(), 0, mapped), "vkMapMemory");
-                    org.lwjgl.system.MemoryUtil.memCopy(
-                            org.lwjgl.system.MemoryUtil.memAddress(initialData),
-                            mapped.get(0),
-                            initialData.remaining());
+                    org.lwjgl.system.MemoryUtil.memByteBuffer(
+                            mapped.get(0), initialData.remaining()).put(initialData);
                     vkUnmapMemory(device, memory);
                 }
                 return track(new VulkanBuffer(this, buffer, memory, descriptor));
