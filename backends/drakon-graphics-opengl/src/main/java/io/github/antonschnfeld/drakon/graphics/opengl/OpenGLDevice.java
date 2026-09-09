@@ -14,6 +14,7 @@ import io.github.antonschnfeld.drakon.graphics.shader.ShaderTarget;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GLCapabilities;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
@@ -230,8 +231,8 @@ public final class OpenGLDevice implements GraphicsDevice {
         makeCurrent();
         int handle = glGenBuffers();
         glBindBuffer(GL_ARRAY_BUFFER, handle);
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            ByteBuffer uploadData = data == null ? null : directUploadData(data, stack);
+        ByteBuffer uploadData = data == null ? null : directUploadData(data);
+        try {
             if (uploadData == null) {
                 glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
             } else if (uploadData.remaining() == descriptor.size()) {
@@ -240,6 +241,8 @@ public final class OpenGLDevice implements GraphicsDevice {
                 glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
                 glBufferSubData(GL_ARRAY_BUFFER, 0, uploadData);
             }
+        } finally {
+            freeUploadData(data, uploadData);
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         return track(new OpenGLBuffer(this, handle, descriptor));
@@ -265,8 +268,8 @@ public final class OpenGLDevice implements GraphicsDevice {
         makeCurrent();
         int handle = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, handle);
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            ByteBuffer uploadData = initialData == null ? null : directUploadData(initialData, stack);
+        ByteBuffer uploadData = initialData == null ? null : directUploadData(initialData);
+        try {
             glTexImage2D(
                     GL_TEXTURE_2D,
                     0,
@@ -277,6 +280,8 @@ public final class OpenGLDevice implements GraphicsDevice {
                     OpenGLMappings.textureExternalFormat(descriptor.format()),
                     OpenGLMappings.textureExternalType(descriptor.format()),
                     uploadData);
+        } finally {
+            freeUploadData(initialData, uploadData);
         }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -292,15 +297,21 @@ public final class OpenGLDevice implements GraphicsDevice {
      * Returns data suitable for an LWJGL native call without changing the caller-visible buffer.
      *
      * <p>LWJGL requires native buffers for pointer-based overloads. Heap buffers are copied into
-     * stack storage that is released at the end of the enclosing upload operation.</p>
+     * temporary native memory that is released at the end of the enclosing upload operation.</p>
      */
-    private static ByteBuffer directUploadData(ByteBuffer data, MemoryStack stack) {
+    private static ByteBuffer directUploadData(ByteBuffer data) {
         if (data.isDirect()) {
             return data;
         }
-        ByteBuffer nativeData = stack.malloc(data.remaining());
+        ByteBuffer nativeData = MemoryUtil.memAlloc(data.remaining());
         nativeData.put(data.duplicate());
         return nativeData.flip();
+    }
+
+    private static void freeUploadData(ByteBuffer originalData, ByteBuffer uploadData) {
+        if (originalData != null && !originalData.isDirect()) {
+            MemoryUtil.memFree(uploadData);
+        }
     }
 
     private static void validateInitialTexture(

@@ -20,9 +20,11 @@ The practical definition of done remains:
 creation-time buffer and texture initialization. LWJGL's requirement for a
 direct buffer at native OpenGL call sites is therefore an OpenGL backend
 implementation detail, not a portable API requirement. The OpenGL mapping
-passes direct inputs through and copies heap inputs into temporary native stack
-storage for the duration of the upload, preserving the caller buffer's position
-and limit in both cases.
+passes direct inputs through and copies heap inputs into temporary native
+allocations for the duration of the upload, preserving the caller buffer's
+position and limit in both cases. Resource payloads must not use
+`MemoryStack`, because they may be substantially larger than native-call
+scratch storage.
 
 `BGRA8_UNORM` initialization now uses OpenGL's `GL_BGRA` external upload
 format, while retaining `GL_RGBA8` internal storage. This makes the portable

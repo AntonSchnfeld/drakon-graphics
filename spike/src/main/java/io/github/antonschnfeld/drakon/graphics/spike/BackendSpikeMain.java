@@ -44,6 +44,8 @@ import static org.lwjgl.util.shaderc.Shaderc.*;
  * SPIR-V that a future {@code drakon-shaders} module would normally provide.</p>
  */
 public final class BackendSpikeMain {
+    private static final int LARGE_HEAP_INITIALIZATION_BYTES = 1024 * 1024;
+
     private static final String VERTEX_GLSL = """
             #version 450
             layout(location = 0) out vec3 color;
@@ -102,10 +104,12 @@ public final class BackendSpikeMain {
             GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics OpenGL spike")) {
             try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
                     Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
+                    Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
                     Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
                     Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
                 verifyInitializationSmokeBuffer(heapInitializedBuffer);
                 verifyInitializationSmokeBuffer(directInitializedBuffer);
+                verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
                 verifyInitializationSmokeTexture(heapInitializedTexture);
                 verifyInitializationSmokeTexture(directInitializedTexture);
                 Shader vertex = device.createShader(new ShaderDescriptor(
@@ -123,10 +127,12 @@ public final class BackendSpikeMain {
             GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics Vulkan spike")) {
             try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
                     Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
+                    Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
                     Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
                     Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
                 verifyInitializationSmokeBuffer(heapInitializedBuffer);
                 verifyInitializationSmokeBuffer(directInitializedBuffer);
+                verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
                 verifyInitializationSmokeTexture(heapInitializedTexture);
                 verifyInitializationSmokeTexture(directInitializedTexture);
                 Shader vertex = device.createShader(new ShaderDescriptor(
@@ -155,6 +161,28 @@ public final class BackendSpikeMain {
     private static void verifyInitializationSmokeBuffer(Buffer buffer) {
         if (buffer.size() != 8 || !buffer.usage().equals(Set.of(BufferUsage.VERTEX))) {
             throw new AssertionError("initialized buffer metadata does not match its descriptor");
+        }
+    }
+
+    /** Exercises heap initialization larger than native-call scratch storage. */
+    private static Buffer createLargeHeapInitializationSmokeBuffer(GraphicsDevice device) {
+        ByteBuffer data = ByteBuffer.allocate(LARGE_HEAP_INITIALIZATION_BYTES + 8);
+        data.position(4);
+        data.limit(data.position() + LARGE_HEAP_INITIALIZATION_BYTES);
+        int position = data.position();
+        int limit = data.limit();
+        Buffer buffer = device.createBuffer(new BufferDescriptor(LARGE_HEAP_INITIALIZATION_BYTES,
+                Set.of(BufferUsage.VERTEX)), data);
+        if (data.position() != position || data.limit() != limit) {
+            throw new AssertionError("createBuffer changed the large heap ByteBuffer position or limit");
+        }
+        return buffer;
+    }
+
+    private static void verifyLargeHeapInitializationSmokeBuffer(Buffer buffer) {
+        if (buffer.size() != LARGE_HEAP_INITIALIZATION_BYTES
+                || !buffer.usage().equals(Set.of(BufferUsage.VERTEX))) {
+            throw new AssertionError("large initialized buffer metadata does not match its descriptor");
         }
     }
 
