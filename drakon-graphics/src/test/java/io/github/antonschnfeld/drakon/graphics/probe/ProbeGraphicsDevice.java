@@ -90,6 +90,55 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         return texture;
     }
 
+    @Override public Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+        ensureOpen();
+        Objects.requireNonNull(descriptor, "descriptor");
+        Objects.requireNonNull(initialData, "initialData");
+        Objects.requireNonNull(initialState, "initialState");
+        long required = textureByteCount(descriptor);
+        if (initialData.remaining() != required) {
+            throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
+        }
+        validateTextureStateUsage(descriptor, initialState);
+        int position = initialData.position();
+        int limit = initialData.limit();
+        ProbeResources.ProbeTexture texture = own(new ProbeResources.ProbeTexture(this, id(), descriptor));
+        textureStates.put(texture, initialState);
+        if (initialData.position() != position || initialData.limit() != limit) {
+            throw new AssertionError("probe unexpectedly modified ByteBuffer state");
+        }
+        return texture;
+    }
+
+    ResourceState textureState(Texture texture) {
+        return textureStates.getOrDefault(texture, ResourceState.UNDEFINED);
+    }
+
+    private static long textureByteCount(TextureDescriptor descriptor) {
+        long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
+        int bytesPerTexel = switch (descriptor.format()) {
+            case RGBA8_UNORM, BGRA8_UNORM, D32_FLOAT -> 4;
+            case RGBA16_FLOAT -> 8;
+        };
+        return Math.multiplyExact(texels, bytesPerTexel);
+    }
+
+    private static void validateTextureStateUsage(TextureDescriptor descriptor, ResourceState state) {
+        TextureUsage requiredUsage = switch (state) {
+            case COLOR_ATTACHMENT_WRITE -> TextureUsage.COLOR_ATTACHMENT;
+            case DEPTH_ATTACHMENT_WRITE -> TextureUsage.DEPTH_ATTACHMENT;
+            case SAMPLED_READ -> TextureUsage.SAMPLED;
+            case STORAGE_READ, STORAGE_WRITE -> TextureUsage.STORAGE;
+            case COPY_SRC -> TextureUsage.COPY_SRC;
+            case COPY_DST -> TextureUsage.COPY_DST;
+            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ, INDIRECT_READ ->
+                    throw new IllegalArgumentException(state + " is not a valid initialized texture state");
+        };
+        if (!descriptor.usage().contains(requiredUsage)) {
+            throw new IllegalArgumentException(state + " requires texture usage " + requiredUsage);
+        }
+    }
+
     @Override public ShaderTarget shaderTarget() {
         ensureOpen();
         return shaderTarget;

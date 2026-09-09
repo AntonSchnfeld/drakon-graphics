@@ -15,6 +15,11 @@ import io.github.antonschnfeld.drakon.graphics.resource.GraphicsStateDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.RenderTarget;
 import io.github.antonschnfeld.drakon.graphics.resource.Shader;
 import io.github.antonschnfeld.drakon.graphics.resource.ShaderStage;
+import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
+import io.github.antonschnfeld.drakon.graphics.resource.Texture;
+import io.github.antonschnfeld.drakon.graphics.resource.TextureDescriptor;
+import io.github.antonschnfeld.drakon.graphics.resource.TextureFormat;
+import io.github.antonschnfeld.drakon.graphics.resource.TextureUsage;
 import io.github.antonschnfeld.drakon.graphics.shader.GlslShaderCode;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
 import io.github.antonschnfeld.drakon.graphics.shader.SpirvShaderCode;
@@ -24,6 +29,7 @@ import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
 import java.util.Locale;
+import java.util.Set;
 
 import static org.lwjgl.util.shaderc.Shaderc.*;
 
@@ -90,26 +96,51 @@ public final class BackendSpikeMain {
     private static void runOpenGL() {
         OpenGLBackend backend = new OpenGLBackend();
         try (OpenGLDevice device = backend.createWindowedDevice(
-                GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics OpenGL spike")) {
-            Shader vertex = device.createShader(new ShaderDescriptor(
-                    ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
-            Shader fragment = device.createShader(new ShaderDescriptor(
-                    ShaderStage.FRAGMENT, "main", new GlslShaderCode(FRAGMENT_GLSL)));
-            runWindowLoop(device, device.defaultRenderTarget(), vertex, fragment, device::shouldClose, device::pollEvents);
+            GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics OpenGL spike")) {
+            try (Texture initialized = createInitializationSmokeTexture(device)) {
+                verifyInitializationSmokeTexture(initialized);
+                Shader vertex = device.createShader(new ShaderDescriptor(
+                        ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
+                Shader fragment = device.createShader(new ShaderDescriptor(
+                        ShaderStage.FRAGMENT, "main", new GlslShaderCode(FRAGMENT_GLSL)));
+                runWindowLoop(device, device.defaultRenderTarget(), vertex, fragment, device::shouldClose, device::pollEvents);
+            }
         }
     }
 
     private static void runVulkan() {
         VulkanBackend backend = new VulkanBackend();
         try (VulkanDevice device = backend.createWindowedDevice(
-                GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics Vulkan spike")) {
-            Shader vertex = device.createShader(new ShaderDescriptor(
-                    ShaderStage.VERTEX, "main",
-                    new SpirvShaderCode(compileSpirv(VERTEX_GLSL, shaderc_glsl_vertex_shader))));
-            Shader fragment = device.createShader(new ShaderDescriptor(
-                    ShaderStage.FRAGMENT, "main",
-                    new SpirvShaderCode(compileSpirv(FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
-            runWindowLoop(device, device.defaultRenderTarget(), vertex, fragment, device::shouldClose, device::pollEvents);
+            GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics Vulkan spike")) {
+            try (Texture initialized = createInitializationSmokeTexture(device)) {
+                verifyInitializationSmokeTexture(initialized);
+                Shader vertex = device.createShader(new ShaderDescriptor(
+                        ShaderStage.VERTEX, "main",
+                        new SpirvShaderCode(compileSpirv(VERTEX_GLSL, shaderc_glsl_vertex_shader))));
+                Shader fragment = device.createShader(new ShaderDescriptor(
+                        ShaderStage.FRAGMENT, "main",
+                        new SpirvShaderCode(compileSpirv(FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
+                runWindowLoop(device, device.defaultRenderTarget(), vertex, fragment, device::shouldClose, device::pollEvents);
+            }
+        }
+    }
+
+    /** Exercises creation-time initialization before the existing triangle loop. */
+    private static Texture createInitializationSmokeTexture(GraphicsDevice device) {
+        ByteBuffer pixels = ByteBuffer.wrap(new byte[] {
+                (byte) 255, 0, 0, (byte) 255,
+                0, (byte) 255, 0, (byte) 255,
+                0, 0, (byte) 255, (byte) 255,
+                (byte) 255, (byte) 255, (byte) 255, (byte) 255
+        });
+        return device.createTexture(new TextureDescriptor(2, 2, TextureFormat.RGBA8_UNORM,
+                Set.of(TextureUsage.SAMPLED)), pixels, ResourceState.SAMPLED_READ);
+    }
+
+    private static void verifyInitializationSmokeTexture(Texture texture) {
+        if (texture.width() != 2 || texture.height() != 2 || texture.format() != TextureFormat.RGBA8_UNORM
+                || !texture.usage().equals(Set.of(TextureUsage.SAMPLED))) {
+            throw new AssertionError("initialized texture metadata does not match its descriptor");
         }
     }
 

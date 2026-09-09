@@ -9,6 +9,7 @@ import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
 import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPass;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbePresentationTargets;
+import io.github.antonschnfeld.drakon.graphics.probe.ProbeTextureInitializationChecks;
 import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 import io.github.antonschnfeld.drakon.graphics.shader.*;
@@ -25,6 +26,7 @@ public final class ApiContractChecks {
         checkPortableDepthState();
         checkPipelineSnapshot();
         checkShaderValueContracts();
+        ProbeTextureInitializationChecks.run();
         checkBackendContracts("opengl");
         checkBackendContracts("vulkan");
     }

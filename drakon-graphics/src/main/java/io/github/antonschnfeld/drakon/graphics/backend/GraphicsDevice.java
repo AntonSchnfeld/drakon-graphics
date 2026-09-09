@@ -12,6 +12,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.GraphicsState;
 import io.github.antonschnfeld.drakon.graphics.resource.GraphicsStateDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.RenderTarget;
 import io.github.antonschnfeld.drakon.graphics.resource.RenderTargetDescriptor;
+import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
 import io.github.antonschnfeld.drakon.graphics.resource.Sampler;
 import io.github.antonschnfeld.drakon.graphics.resource.SamplerDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.Shader;
@@ -85,6 +86,36 @@ public interface GraphicsDevice extends AutoCloseable {
      * @throws IllegalStateException if this device is closed
      */
     Texture createTexture(TextureDescriptor descriptor);
+
+    /**
+     * Creates a texture, initializes all of mip level zero, and returns it in
+     * {@code initialState}.
+     *
+     * <p>The bytes from {@code initialData}'s current position (inclusive) to
+     * its limit (exclusive) must be the complete, tightly packed contents of
+     * this two-dimensional texture. The required byte count is {@code width *
+     * height * bytes-per-texel(format)}. There is no row padding, mip offset,
+     * or array-layer offset in this creation-time-only operation.
+     * Implementations must not modify the buffer's position or limit.</p>
+     *
+     * <p>{@code initialState} is the first portable GPU access state, rather
+     * than an implementation upload state. It must be a texture state other
+     * than {@link ResourceState#UNDEFINED}
+     * and must be compatible with a usage declared by {@code descriptor}.
+     * Internal upload mechanics do not require application-visible
+     * {@code COPY_DST} usage.</p>
+     *
+     * @param descriptor texture dimensions, format, and intended usages
+     * @param initialData complete tightly packed mip-level-zero texel bytes
+     * @param initialState first portable GPU access state
+     * @return a new initialized texture owned by this device
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalArgumentException if the byte count is not exact, the
+     *         state is not a texture state, is {@code UNDEFINED}, or is
+     *         incompatible with the descriptor usage
+     * @throws IllegalStateException if this device is closed
+     */
+    Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState);
 
     /**
      * Returns the shader target that code must be prepared for before it is
