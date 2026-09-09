@@ -69,8 +69,10 @@ public final class BackendSpikeMain {
             }
             """;
 
+    private static final String OPENGL_VERTEX_GLSL = VERTEX_GLSL.replace("#version 450", "#version 430");
+
     private static final String OPENGL_FRAGMENT_GLSL = """
-            #version 450
+            #version 430
             layout(binding = 0) uniform sampler2D texturePattern;
             layout(location = 0) in vec2 interpolatedUv;
             layout(location = 0) out vec4 outColor;
@@ -125,7 +127,7 @@ public final class BackendSpikeMain {
                 verifyInitializationSmokeTexture(heapInitializedTexture);
                 verifyInitializationSmokeTexture(directInitializedTexture);
                 try (Shader vertex = device.createShader(new ShaderDescriptor(
-                        ShaderStage.VERTEX, "main", new GlslShaderCode(VERTEX_GLSL)));
+                        ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
                         Shader fragment = device.createShader(new ShaderDescriptor(
                                 ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_FRAGMENT_GLSL)));
                         TexturedMesh mesh = createTexturedMesh(device, device.defaultRenderTarget(), vertex, fragment)) {
