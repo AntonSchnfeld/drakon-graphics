@@ -335,6 +335,30 @@ This evidence does not yet justify a general `writeTexture(...)` API,
 streaming APIs. Those remain future decisions driven by additional backend and
 workload evidence.
 
+## Textured indexed-mesh result (DG-SPIKE-002)
+
+The real OpenGL and Vulkan presentation spikes now execute one shared portable
+workload: a counter-clockwise quad with four interleaved position/UV vertices,
+six unsigned 16-bit indices, and one `drawIndexed(6, 1, 0, 0, 0)` call. The
+vertex and index buffers are initialized through `GraphicsDevice`, then
+transitioned to `VERTEX_READ` and `INDEX_READ` before rendering.
+
+The workload initializes a 4-by-4 `RGBA8_UNORM` texture with sharply distinct
+red, green, blue, and yellow quadrants and creates it directly in
+`SAMPLED_READ`. One `BindingLayout` declares the fragment-stage
+`texturePattern` sampled-texture binding; its `BindingSet` supplies the current
+`TextureBinding(texture, sampler)` pair. The graphics state declares separate
+position and UV attributes, and the same portable recording path binds the
+state, vertex/index buffers, and binding set before submission and
+`GraphicsDevice.present(RenderTarget)`.
+
+Visual inspection of both GLFW windows confirmed identical output: a correctly
+oriented quad with red upper-left, green upper-right, blue lower-left, and
+yellow lower-right quadrants. This provides real-backend evidence that the
+current combined texture-and-sampler binding maps correctly to an OpenGL
+texture unit and sampler object and to a Vulkan combined image-sampler
+descriptor. No additional public API change was required.
+
 The code should avoid obviously pathological behavior, but optimization work should wait until the portable API has survived real execution.
 
 ## What to run next
@@ -360,7 +384,9 @@ run-opengl.cmd
 run-vulkan.cmd
 ```
 
-The expected smoke result is a GLFW window containing a colored triangle. Close the window to end the backend run.
+The expected smoke result is a GLFW window containing a large four-quadrant
+textured quad: red upper-left, green upper-right, blue lower-left, and yellow
+lower-right. Close the window to end the backend run.
 
 ## What feedback is most useful
 
