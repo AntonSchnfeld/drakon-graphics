@@ -245,6 +245,19 @@ public final class OpenGLDevice implements GraphicsDevice {
     @Override
     public Texture createTexture(TextureDescriptor descriptor) {
         Objects.requireNonNull(descriptor, "descriptor");
+        return createTextureInternal(descriptor, null, ResourceState.UNDEFINED);
+    }
+
+    @Override
+    public Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+        Objects.requireNonNull(descriptor, "descriptor");
+        Objects.requireNonNull(initialData, "initialData");
+        Objects.requireNonNull(initialState, "initialState");
+        validateInitialTexture(descriptor, initialData, initialState);
+        return createTextureInternal(descriptor, initialData.duplicate(), initialState);
+    }
+
+    private Texture createTextureInternal(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
         requireOpen();
         makeCurrent();
         int handle = glGenTextures();
@@ -258,13 +271,49 @@ public final class OpenGLDevice implements GraphicsDevice {
                 0,
                 OpenGLMappings.textureExternalFormat(descriptor.format()),
                 OpenGLMappings.textureExternalType(descriptor.format()),
-                (ByteBuffer) null);
+                initialData);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
-        return track(new OpenGLTexture(this, handle, descriptor));
+        OpenGLTexture texture = new OpenGLTexture(this, handle, descriptor);
+        texture.state = initialState;
+        return track(texture);
+    }
+
+    private static void validateInitialTexture(
+            TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+        long required = textureByteCount(descriptor);
+        if (initialData.remaining() != required) {
+            throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
+        }
+        switch (initialState) {
+            case COLOR_ATTACHMENT_WRITE -> requireTextureUsage(descriptor, TextureUsage.COLOR_ATTACHMENT, initialState);
+            case DEPTH_ATTACHMENT_WRITE -> requireTextureUsage(descriptor, TextureUsage.DEPTH_ATTACHMENT, initialState);
+            case SAMPLED_READ -> requireTextureUsage(descriptor, TextureUsage.SAMPLED, initialState);
+            case STORAGE_READ, STORAGE_WRITE -> requireTextureUsage(descriptor, TextureUsage.STORAGE, initialState);
+            case COPY_SRC -> requireTextureUsage(descriptor, TextureUsage.COPY_SRC, initialState);
+            case COPY_DST -> requireTextureUsage(descriptor, TextureUsage.COPY_DST, initialState);
+            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ, INDIRECT_READ ->
+                    throw new IllegalArgumentException(initialState + " is not a valid initialized texture state");
+        }
+    }
+
+    private static long textureByteCount(TextureDescriptor descriptor) {
+        long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
+        int bytesPerTexel = switch (descriptor.format()) {
+            case RGBA8_UNORM, BGRA8_UNORM -> 4;
+            case RGBA16_FLOAT -> 8;
+            case D32_FLOAT -> 4;
+        };
+        return Math.multiplyExact(texels, bytesPerTexel);
+    }
+
+    private static void requireTextureUsage(TextureDescriptor descriptor, TextureUsage usage, ResourceState state) {
+        if (!descriptor.usage().contains(usage)) {
+            throw new IllegalArgumentException(state + " requires texture usage " + usage);
+        }
     }
 
     @Override

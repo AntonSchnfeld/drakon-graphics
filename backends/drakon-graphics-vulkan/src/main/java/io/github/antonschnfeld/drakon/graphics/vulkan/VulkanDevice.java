@@ -772,6 +772,19 @@ public final class VulkanDevice implements GraphicsDevice {
     @Override
     public Texture createTexture(TextureDescriptor descriptor) {
         Objects.requireNonNull(descriptor, "descriptor");
+        return createTextureInternal(descriptor, null, ResourceState.UNDEFINED);
+    }
+
+    @Override
+    public Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+        Objects.requireNonNull(descriptor, "descriptor");
+        Objects.requireNonNull(initialData, "initialData");
+        Objects.requireNonNull(initialState, "initialState");
+        validateInitialTexture(descriptor, initialData, initialState);
+        return createTextureInternal(descriptor, initialData.duplicate(), initialState);
+    }
+
+    private Texture createTextureInternal(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
         requireOpen();
         try (MemoryStack stack = stackPush()) {
             VkImageCreateInfo info = VkImageCreateInfo.calloc(stack)
@@ -783,7 +796,8 @@ public final class VulkanDevice implements GraphicsDevice {
                     .arrayLayers(1)
                     .samples(VK_SAMPLE_COUNT_1_BIT)
                     .tiling(VK_IMAGE_TILING_OPTIMAL)
-                    .usage(VulkanMappings.imageUsage(descriptor.usage()))
+                    .usage(VulkanMappings.imageUsage(descriptor.usage())
+                            | (initialData == null ? 0 : VK_IMAGE_USAGE_TRANSFER_DST_BIT))
                     .sharingMode(VK_SHARING_MODE_EXCLUSIVE)
                     .initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
             LongBuffer pImage = stack.mallocLong(1);
@@ -810,7 +824,12 @@ public final class VulkanDevice implements GraphicsDevice {
                 LongBuffer pView = stack.mallocLong(1);
                 check(vkCreateImageView(device, viewInfo, null, pView), "vkCreateImageView");
                 view = pView.get(0);
-                return track(new VulkanTexture(this, image, memory, view, descriptor));
+                VulkanTexture texture = new VulkanTexture(this, image, memory, view, descriptor);
+                if (initialData != null) {
+                    uploadTexture(texture, initialData, initialState);
+                }
+                texture.state = initialState;
+                return track(texture);
             } catch (RuntimeException | Error failure) {
                 if (view != 0L) vkDestroyImageView(device, view, null);
                 if (memory != 0L) vkFreeMemory(device, memory, null);
@@ -818,6 +837,139 @@ public final class VulkanDevice implements GraphicsDevice {
                 throw failure;
             }
         }
+    }
+
+    private void uploadTexture(VulkanTexture texture, ByteBuffer initialData, ResourceState initialState) {
+        long size = initialData.remaining();
+        long stagingBuffer = 0L;
+        long stagingMemory = 0L;
+        VkCommandBuffer commandBuffer = null;
+        try (MemoryStack stack = stackPush()) {
+            VkBufferCreateInfo bufferInfo = VkBufferCreateInfo.calloc(stack)
+                    .sType$Default()
+                    .size(size)
+                    .usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+                    .sharingMode(VK_SHARING_MODE_EXCLUSIVE);
+            LongBuffer pBuffer = stack.mallocLong(1);
+            check(vkCreateBuffer(device, bufferInfo, null, pBuffer), "vkCreateBuffer(texture staging)");
+            stagingBuffer = pBuffer.get(0);
+            VkMemoryRequirements requirements = VkMemoryRequirements.malloc(stack);
+            vkGetBufferMemoryRequirements(device, stagingBuffer, requirements);
+            int memoryType = findMemoryType(requirements.memoryTypeBits(),
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stack);
+            stagingMemory = allocateMemory(requirements.size(), memoryType, stack);
+            check(vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0), "vkBindBufferMemory(texture staging)");
+
+            PointerBuffer mapped = stack.mallocPointer(1);
+            check(vkMapMemory(device, stagingMemory, 0, size, 0, mapped), "vkMapMemory(texture staging)");
+            try {
+                MemoryUtil.memByteBuffer(mapped.get(0), Math.toIntExact(size)).put(initialData);
+            } finally {
+                vkUnmapMemory(device, stagingMemory);
+            }
+
+            VkCommandBufferAllocateInfo allocate = VkCommandBufferAllocateInfo.calloc(stack)
+                    .sType$Default()
+                    .commandPool(commandPool)
+                    .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+                    .commandBufferCount(1);
+            PointerBuffer pCommandBuffer = stack.mallocPointer(1);
+            check(vkAllocateCommandBuffers(device, allocate, pCommandBuffer), "vkAllocateCommandBuffers(texture upload)");
+            commandBuffer = new VkCommandBuffer(pCommandBuffer.get(0), device);
+            VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack)
+                    .sType$Default()
+                    .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+            check(vkBeginCommandBuffer(commandBuffer, begin), "vkBeginCommandBuffer(texture upload)");
+
+            VkBufferMemoryBarrier2.Buffer hostWrite = VkBufferMemoryBarrier2.calloc(1, stack);
+            hostWrite.get(0).sType$Default()
+                    .srcStageMask(VK_PIPELINE_STAGE_2_HOST_BIT)
+                    .srcAccessMask(VK_ACCESS_2_HOST_WRITE_BIT)
+                    .dstStageMask(VK_PIPELINE_STAGE_2_TRANSFER_BIT)
+                    .dstAccessMask(VK_ACCESS_2_TRANSFER_READ_BIT)
+                    .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .buffer(stagingBuffer)
+                    .offset(0)
+                    .size(size);
+            VkImageMemoryBarrier2.Buffer toTransfer = imageBarrier(stack, texture,
+                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0L,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vkCmdPipelineBarrier2(commandBuffer, VkDependencyInfo.calloc(stack)
+                    .sType$Default().pBufferMemoryBarriers(hostWrite).pImageMemoryBarriers(toTransfer));
+
+            VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
+            region.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0)
+                    .imageSubresource(s -> s.aspectMask(VulkanMappings.imageAspect(texture.format()))
+                            .mipLevel(0).baseArrayLayer(0).layerCount(1))
+                    .imageOffset(o -> o.set(0, 0, 0))
+                    .imageExtent(e -> e.set(texture.width(), texture.height(), 1));
+            vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, texture.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
+
+            VkImageMemoryBarrier2.Buffer toInitial = imageBarrier(stack, texture,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VulkanMappings.stageMask(initialState), VulkanMappings.accessMask(initialState),
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VulkanMappings.imageLayout(initialState));
+            vkCmdPipelineBarrier2(commandBuffer, VkDependencyInfo.calloc(stack)
+                    .sType$Default().pImageMemoryBarriers(toInitial));
+            check(vkEndCommandBuffer(commandBuffer), "vkEndCommandBuffer(texture upload)");
+            VkSubmitInfo submit = VkSubmitInfo.calloc(stack).sType$Default()
+                    .pCommandBuffers(stack.pointers(commandBuffer.address()));
+            check(vkQueueSubmit(queue, submit, VK_NULL_HANDLE), "vkQueueSubmit(texture upload)");
+            check(vkQueueWaitIdle(queue), "vkQueueWaitIdle(texture upload)");
+        } finally {
+            if (commandBuffer != null) vkFreeCommandBuffers(device, commandPool, commandBuffer);
+            if (stagingBuffer != 0L) vkDestroyBuffer(device, stagingBuffer, null);
+            if (stagingMemory != 0L) vkFreeMemory(device, stagingMemory, null);
+        }
+    }
+
+    private VkImageMemoryBarrier2.Buffer imageBarrier(
+            MemoryStack stack, VulkanTexture texture, long srcStage, long srcAccess,
+            long dstStage, long dstAccess, int oldLayout, int newLayout) {
+        VkImageMemoryBarrier2.Buffer barrier = VkImageMemoryBarrier2.calloc(1, stack);
+        barrier.get(0).sType$Default()
+                .srcStageMask(srcStage).srcAccessMask(srcAccess)
+                .dstStageMask(dstStage).dstAccessMask(dstAccess)
+                .oldLayout(oldLayout).newLayout(newLayout)
+                .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                .image(texture.image)
+                .subresourceRange(r -> r.aspectMask(VulkanMappings.imageAspect(texture.format()))
+                        .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
+        return barrier;
+    }
+
+    private static void validateInitialTexture(
+            TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+        long required = textureByteCount(descriptor);
+        if (initialData.remaining() != required) {
+            throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
+        }
+        TextureUsage usage = switch (initialState) {
+            case COLOR_ATTACHMENT_WRITE -> TextureUsage.COLOR_ATTACHMENT;
+            case DEPTH_ATTACHMENT_WRITE -> TextureUsage.DEPTH_ATTACHMENT;
+            case SAMPLED_READ -> TextureUsage.SAMPLED;
+            case STORAGE_READ, STORAGE_WRITE -> TextureUsage.STORAGE;
+            case COPY_SRC -> TextureUsage.COPY_SRC;
+            case COPY_DST -> TextureUsage.COPY_DST;
+            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ, INDIRECT_READ ->
+                    throw new IllegalArgumentException(initialState + " is not a valid initialized texture state");
+        };
+        if (!descriptor.usage().contains(usage)) {
+            throw new IllegalArgumentException(initialState + " requires texture usage " + usage);
+        }
+    }
+
+    private static long textureByteCount(TextureDescriptor descriptor) {
+        long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
+        int bytesPerTexel = switch (descriptor.format()) {
+            case RGBA8_UNORM, BGRA8_UNORM, D32_FLOAT -> 4;
+            case RGBA16_FLOAT -> 8;
+        };
+        return Math.multiplyExact(texels, bytesPerTexel);
     }
 
     private long allocateMemory(long size, int memoryType, MemoryStack stack) {
