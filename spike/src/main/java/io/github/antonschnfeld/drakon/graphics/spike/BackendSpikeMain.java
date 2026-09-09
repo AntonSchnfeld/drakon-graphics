@@ -12,6 +12,9 @@ import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPipeline;
 import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.GraphicsState;
 import io.github.antonschnfeld.drakon.graphics.resource.GraphicsStateDescriptor;
+import io.github.antonschnfeld.drakon.graphics.resource.Buffer;
+import io.github.antonschnfeld.drakon.graphics.resource.BufferDescriptor;
+import io.github.antonschnfeld.drakon.graphics.resource.BufferUsage;
 import io.github.antonschnfeld.drakon.graphics.resource.RenderTarget;
 import io.github.antonschnfeld.drakon.graphics.resource.Shader;
 import io.github.antonschnfeld.drakon.graphics.resource.ShaderStage;
@@ -41,6 +44,8 @@ import static org.lwjgl.util.shaderc.Shaderc.*;
  * SPIR-V that a future {@code drakon-shaders} module would normally provide.</p>
  */
 public final class BackendSpikeMain {
+    private static final int LARGE_HEAP_INITIALIZATION_BYTES = 1024 * 1024;
+
     private static final String VERTEX_GLSL = """
             #version 450
             layout(location = 0) out vec3 color;
@@ -97,8 +102,16 @@ public final class BackendSpikeMain {
         OpenGLBackend backend = new OpenGLBackend();
         try (OpenGLDevice device = backend.createWindowedDevice(
             GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics OpenGL spike")) {
-            try (Texture initialized = createInitializationSmokeTexture(device)) {
-                verifyInitializationSmokeTexture(initialized);
+            try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
+                    Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
+                    Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
+                    Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
+                    Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
+                verifyInitializationSmokeBuffer(heapInitializedBuffer);
+                verifyInitializationSmokeBuffer(directInitializedBuffer);
+                verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
+                verifyInitializationSmokeTexture(heapInitializedTexture);
+                verifyInitializationSmokeTexture(directInitializedTexture);
                 Shader vertex = device.createShader(new ShaderDescriptor(
                         ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
                 Shader fragment = device.createShader(new ShaderDescriptor(
@@ -112,8 +125,16 @@ public final class BackendSpikeMain {
         VulkanBackend backend = new VulkanBackend();
         try (VulkanDevice device = backend.createWindowedDevice(
             GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics Vulkan spike")) {
-            try (Texture initialized = createInitializationSmokeTexture(device)) {
-                verifyInitializationSmokeTexture(initialized);
+            try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
+                    Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
+                    Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
+                    Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
+                    Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
+                verifyInitializationSmokeBuffer(heapInitializedBuffer);
+                verifyInitializationSmokeBuffer(directInitializedBuffer);
+                verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
+                verifyInitializationSmokeTexture(heapInitializedTexture);
+                verifyInitializationSmokeTexture(directInitializedTexture);
                 Shader vertex = device.createShader(new ShaderDescriptor(
                         ShaderStage.VERTEX, "main",
                         new SpirvShaderCode(compileSpirv(VERTEX_GLSL, shaderc_glsl_vertex_shader))));
@@ -125,16 +146,71 @@ public final class BackendSpikeMain {
         }
     }
 
-    /** Exercises creation-time initialization before the existing triangle loop. */
-    private static Texture createInitializationSmokeTexture(GraphicsDevice device) {
-        ByteBuffer pixels = ByteBuffer.wrap(new byte[] {
+    /** Exercises heap and direct buffer initialization before the existing triangle loop. */
+    private static Buffer createInitializationSmokeBuffer(GraphicsDevice device, boolean direct) {
+        ByteBuffer data = initializationData(8, 2, new byte[] {1, 2, 3, 4}, direct);
+        int position = data.position();
+        int limit = data.limit();
+        Buffer buffer = device.createBuffer(new BufferDescriptor(8, Set.of(BufferUsage.VERTEX)), data);
+        if (data.position() != position || data.limit() != limit) {
+            throw new AssertionError("createBuffer changed the caller ByteBuffer position or limit");
+        }
+        return buffer;
+    }
+
+    private static void verifyInitializationSmokeBuffer(Buffer buffer) {
+        if (buffer.size() != 8 || !buffer.usage().equals(Set.of(BufferUsage.VERTEX))) {
+            throw new AssertionError("initialized buffer metadata does not match its descriptor");
+        }
+    }
+
+    /** Exercises heap initialization larger than native-call scratch storage. */
+    private static Buffer createLargeHeapInitializationSmokeBuffer(GraphicsDevice device) {
+        ByteBuffer data = ByteBuffer.allocate(LARGE_HEAP_INITIALIZATION_BYTES + 8);
+        data.position(4);
+        data.limit(data.position() + LARGE_HEAP_INITIALIZATION_BYTES);
+        int position = data.position();
+        int limit = data.limit();
+        Buffer buffer = device.createBuffer(new BufferDescriptor(LARGE_HEAP_INITIALIZATION_BYTES,
+                Set.of(BufferUsage.VERTEX)), data);
+        if (data.position() != position || data.limit() != limit) {
+            throw new AssertionError("createBuffer changed the large heap ByteBuffer position or limit");
+        }
+        return buffer;
+    }
+
+    private static void verifyLargeHeapInitializationSmokeBuffer(Buffer buffer) {
+        if (buffer.size() != LARGE_HEAP_INITIALIZATION_BYTES
+                || !buffer.usage().equals(Set.of(BufferUsage.VERTEX))) {
+            throw new AssertionError("large initialized buffer metadata does not match its descriptor");
+        }
+    }
+
+    /** Exercises heap and direct texture initialization before the existing triangle loop. */
+    private static Texture createInitializationSmokeTexture(GraphicsDevice device, boolean direct) {
+        ByteBuffer pixels = initializationData(20, 2, new byte[] {
                 (byte) 255, 0, 0, (byte) 255,
                 0, (byte) 255, 0, (byte) 255,
                 0, 0, (byte) 255, (byte) 255,
                 (byte) 255, (byte) 255, (byte) 255, (byte) 255
-        });
-        return device.createTexture(new TextureDescriptor(2, 2, TextureFormat.RGBA8_UNORM,
+        }, direct);
+        int position = pixels.position();
+        int limit = pixels.limit();
+        Texture texture = device.createTexture(new TextureDescriptor(2, 2, TextureFormat.RGBA8_UNORM,
                 Set.of(TextureUsage.SAMPLED)), pixels, ResourceState.SAMPLED_READ);
+        if (pixels.position() != position || pixels.limit() != limit) {
+            throw new AssertionError("createTexture changed the caller ByteBuffer position or limit");
+        }
+        return texture;
+    }
+
+    private static ByteBuffer initializationData(int capacity, int offset, byte[] bytes, boolean direct) {
+        ByteBuffer data = direct ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
+        data.position(offset);
+        data.put(bytes);
+        data.flip();
+        data.position(offset);
+        return data;
     }
 
     private static void verifyInitializationSmokeTexture(Texture texture) {
