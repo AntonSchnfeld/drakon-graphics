@@ -73,21 +73,6 @@ public final class Binding<T> {
         return new Binding<>(name, binding, BindingType.UNIFORM_BUFFER, BufferBinding.class, Set.of(stages));
     }
 
-    /**
-     * Declares a shader-storage-buffer range slot.
-     *
-     * @param name shader resource name; must not be blank
-     * @param binding non-negative binding number within its layout
-     * @param stages shader stages allowed to access the range
-     * @return typed storage-buffer binding
-     * @throws NullPointerException if {@code name}, {@code stages}, or a stage is null
-     * @throws IllegalArgumentException if name is blank, binding is negative, or
-     *         no stages are supplied
-     */
-    public static Binding<BufferBinding> storageBuffer(String name, int binding, ShaderStage... stages) {
-        return new Binding<>(name, binding, BindingType.STORAGE_BUFFER, BufferBinding.class, Set.of(stages));
-    }
-
     /** Returns the shader resource name associated with this binding.
      *
      * <p>Backends whose native binding model is not set/group based may use

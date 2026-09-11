@@ -83,17 +83,6 @@ final class ProbeResources {
         GraphicsStateDescriptor descriptor() { return descriptor; }
     }
 
-    static final class ProbeComputeState extends Resource implements ComputeState {
-        private final ComputeStateDescriptor descriptor;
-
-        ProbeComputeState(ProbeGraphicsDevice owner, long id, ComputeStateDescriptor descriptor) {
-            super(owner, id);
-            this.descriptor = descriptor;
-        }
-
-        ComputeStateDescriptor descriptor() { return descriptor; }
-    }
-
     static final class ProbeBindingSet extends Resource implements BindingSet {
         private final BindingSetDescriptor descriptor;
 

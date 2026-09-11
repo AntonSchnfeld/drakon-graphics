@@ -22,14 +22,14 @@ import java.nio.ByteOrder;
 import java.util.*;
 
 public final class F_CustomRenderPass {
-    public static final class WireframePass implements RenderPass {
+    public static final class CustomPass implements RenderPass {
         private final RenderView view;
         private final Texture color;
         private final GraphicsState state;
         private final Buffer vertices;
         private final Buffer indices;
 
-        public WireframePass(RenderView view, Texture color, GraphicsState state, Buffer vertices, Buffer indices) {
+        public CustomPass(RenderView view, Texture color, GraphicsState state, Buffer vertices, Buffer indices) {
             this.view = view;
             this.color = color;
             this.state = state;
@@ -64,13 +64,13 @@ public final class F_CustomRenderPass {
             VertexLayout layout = VertexLayout.builder()
                     .binding(0, 3 * Float.BYTES, VertexInputRate.PER_VERTEX)
                     .attribute(0, 0, VertexFormat.FLOAT3, 0).build();
-            Shader vs = shader(device, ShaderStage.VERTEX, "// wireframe vertex");
-            Shader fs = shader(device, ShaderStage.FRAGMENT, "// wireframe fragment");
-            GraphicsState wireframe = device.createGraphicsState(GraphicsStateDescriptor.builder()
+            Shader vs = shader(device, ShaderStage.VERTEX, "// custom-pass vertex");
+            Shader fs = shader(device, ShaderStage.FRAGMENT, "// custom-pass fragment");
+            GraphicsState state = device.createGraphicsState(GraphicsStateDescriptor.builder()
                     .vertexShader(vs)
                     .fragmentShader(fs)
                     .vertexLayout(layout)
-                    .raster(new RasterState(CullMode.NONE, true))
+                    .raster(new RasterState(CullMode.NONE))
                     .colorFormat(TextureFormat.RGBA8_UNORM)
                     .build());
 
@@ -80,7 +80,7 @@ public final class F_CustomRenderPass {
             RenderView view = RenderView.fullTarget(target);
 
             Renderer renderer = new Renderer(device);
-            renderer.execute(RenderPipeline.of(new WireframePass(view, color, wireframe, vertices, indices)));
+            renderer.execute(RenderPipeline.of(new CustomPass(view, color, state, vertices, indices)));
         }
     }
     /**

@@ -5,7 +5,5 @@ public enum ShaderStage {
     /** Vertex-processing stage. */
     VERTEX,
     /** Fragment/pixel-processing stage. */
-    FRAGMENT,
-    /** Compute stage. */
-    COMPUTE
+    FRAGMENT
 }

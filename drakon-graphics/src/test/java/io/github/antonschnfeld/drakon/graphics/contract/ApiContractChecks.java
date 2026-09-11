@@ -105,14 +105,41 @@ public final class ApiContractChecks {
                         new ShaderDescriptor(ShaderStage.VERTEX, "main", glsl)));
             }
 
+            ShaderCode acceptedCode = backendId.equals("opengl") ? glsl : spirv;
+            Shader vertexShader = first.createShader(new ShaderDescriptor(
+                    ShaderStage.VERTEX, "main", acceptedCode));
+            Shader fragmentShader = first.createShader(new ShaderDescriptor(
+                    ShaderStage.FRAGMENT, "main", acceptedCode));
+            expect(NullPointerException.class, () -> GraphicsStateDescriptor.builder()
+                    .vertexShader(vertexShader)
+                    .colorFormat(TextureFormat.RGBA8_UNORM)
+                    .build());
+            expect(IllegalArgumentException.class, () -> GraphicsStateDescriptor.builder()
+                    .vertexShader(vertexShader)
+                    .fragmentShader(fragmentShader)
+                    .build());
+            expect(IllegalArgumentException.class, () -> GraphicsStateDescriptor.builder()
+                    .vertexShader(vertexShader)
+                    .fragmentShader(fragmentShader)
+                    .colorFormat(TextureFormat.RGBA8_UNORM)
+                    .colorFormat(TextureFormat.BGRA8_UNORM)
+                    .build());
+
             Buffer foreign = first.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.VERTEX)));
             CommandEncoder secondEncoder = second.createCommandEncoder();
             expect(IllegalArgumentException.class,
                     () -> secondEncoder.setVertexBuffer(0, foreign, 0));
+            Buffer local = second.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.VERTEX)));
+            expect(IllegalArgumentException.class, () -> second.createCommandEncoder().transition(
+                    local, ResourceState.UNDEFINED, ResourceState.COPY_DST));
 
             Texture color = second.createTexture(new TextureDescriptor(
                     16, 16, TextureFormat.RGBA8_UNORM,
                     Set.of(TextureUsage.COLOR_ATTACHMENT, TextureUsage.COPY_SRC)));
+            expect(IllegalArgumentException.class,
+                    () -> new RenderTargetDescriptor(List.of(), null));
+            expect(IllegalArgumentException.class,
+                    () -> new RenderTargetDescriptor(List.of(color, color), null));
             RenderTarget target = second.createRenderTarget(new RenderTargetDescriptor(List.of(color), null));
             if (!target.colorFormats().equals(List.of(TextureFormat.RGBA8_UNORM))
                     || target.depthFormat() != null) {

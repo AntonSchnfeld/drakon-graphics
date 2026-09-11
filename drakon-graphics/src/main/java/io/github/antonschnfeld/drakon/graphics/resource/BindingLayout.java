@@ -11,7 +11,7 @@ import java.util.Set;
  *
  * <p>Binding numbers must be unique within a layout. Layout compatibility is
  * identity-based: a binding set is compatible with the exact layout instance
- * declared by a graphics/compute state, not merely a structurally equal copy.
+ * declared by a graphics state, not merely a structurally equal copy.
  * The index of a layout in a state descriptor determines its group number when
  * calling {@link CommandEncoder#bindSet(int, BindingSet)}.</p>
  */

@@ -4,7 +4,7 @@ import io.github.antonschnfeld.drakon.graphics.command.CommandEncoder;
 import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 
 /**
- * One reusable unit of rendering, compute, copy, or synchronization work.
+ * One reusable unit of rendering, texture-copy, or synchronization work.
  *
  * <p>A pass records backend-agnostic commands into an encoder supplied by the
  * {@link Renderer}. Any targets, views, resources, or

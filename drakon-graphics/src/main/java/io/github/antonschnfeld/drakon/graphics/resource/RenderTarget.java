@@ -44,7 +44,7 @@ public interface RenderTarget extends GpuResource {
     int height();
 
     /**
-     * Returns color-attachment formats in stable attachment order.
+     * Returns the color-attachment format in a one-element list.
      *
      * <p>The returned list describes compatibility only; it does not expose or
      * imply public {@link Texture} objects for the attachments. This distinction
@@ -55,7 +55,7 @@ public interface RenderTarget extends GpuResource {
      * target may report different formats after backend recreation; graphics
      * states cached against the old formats must then be rebuilt.</p>
      *
-     * @return immutable ordered snapshot of color formats; may be empty for a depth-only target
+     * @return immutable snapshot containing exactly one color format
      */
     List<TextureFormat> colorFormats();
 

@@ -1,7 +1,6 @@
 package io.github.antonschnfeld.drakon.graphics.opengl;
 
 import io.github.antonschnfeld.drakon.graphics.backend.*;
-import io.github.antonschnfeld.drakon.graphics.backend.GraphicsCapabilities;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
 import io.github.antonschnfeld.drakon.graphics.command.CommandEncoder;
@@ -54,7 +53,6 @@ public final class OpenGLDevice implements GraphicsDevice {
     private final boolean visible;
     private final GLCapabilities capabilities;
     private final OpenGLShaderTarget shaderTarget = new OpenGLShaderTarget(4, 3, 430);
-    private final GraphicsCapabilities graphicsCapabilities = new GraphicsCapabilities(true, true, true);
     private final List<OpenGLResource> resources = new ArrayList<>();
     private final OpenGLRenderTarget defaultTarget;
     private boolean closed;
@@ -316,6 +314,9 @@ public final class OpenGLDevice implements GraphicsDevice {
 
     private static void validateInitialTexture(
             TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+        if (descriptor.format().isDepth()) {
+            throw new IllegalArgumentException("CPU initialization of depth textures is not supported");
+        }
         long required = textureByteCount(descriptor);
         if (initialData.remaining() != required) {
             throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
@@ -324,10 +325,9 @@ public final class OpenGLDevice implements GraphicsDevice {
             case COLOR_ATTACHMENT_WRITE -> requireTextureUsage(descriptor, TextureUsage.COLOR_ATTACHMENT, initialState);
             case DEPTH_ATTACHMENT_WRITE -> requireTextureUsage(descriptor, TextureUsage.DEPTH_ATTACHMENT, initialState);
             case SAMPLED_READ -> requireTextureUsage(descriptor, TextureUsage.SAMPLED, initialState);
-            case STORAGE_READ, STORAGE_WRITE -> requireTextureUsage(descriptor, TextureUsage.STORAGE, initialState);
             case COPY_SRC -> requireTextureUsage(descriptor, TextureUsage.COPY_SRC, initialState);
             case COPY_DST -> requireTextureUsage(descriptor, TextureUsage.COPY_DST, initialState);
-            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ, INDIRECT_READ ->
+            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ ->
                     throw new IllegalArgumentException(initialState + " is not a valid initialized texture state");
         }
     }
@@ -336,7 +336,6 @@ public final class OpenGLDevice implements GraphicsDevice {
         long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
         int bytesPerTexel = switch (descriptor.format()) {
             case RGBA8_UNORM, BGRA8_UNORM -> 4;
-            case RGBA16_FLOAT -> 8;
             case D32_FLOAT -> 4;
         };
         return Math.multiplyExact(texels, bytesPerTexel);
@@ -368,7 +367,6 @@ public final class OpenGLDevice implements GraphicsDevice {
         int nativeStage = switch (descriptor.stage()) {
             case VERTEX -> GL_VERTEX_SHADER;
             case FRAGMENT -> GL_FRAGMENT_SHADER;
-            case COMPUTE -> GL_COMPUTE_SHADER;
         };
         int shader = glCreateShader(nativeStage);
         glShaderSource(shader, glsl.code());
@@ -408,9 +406,7 @@ public final class OpenGLDevice implements GraphicsDevice {
         Objects.requireNonNull(descriptor, "descriptor");
         requireOpen();
         OpenGLShader vertex = owned(descriptor.vertexShader(), OpenGLShader.class, "vertex shader");
-        OpenGLShader fragment = descriptor.fragmentShader()
-                .map(value -> owned(value, OpenGLShader.class, "fragment shader"))
-                .orElse(null);
+        OpenGLShader fragment = owned(descriptor.fragmentShader(), OpenGLShader.class, "fragment shader");
         makeCurrent();
         int program = linkProgram(vertex, fragment);
         int vao = glGenVertexArrays();
@@ -426,17 +422,6 @@ public final class OpenGLDevice implements GraphicsDevice {
         glBindVertexArray(0);
         OpenGLBindingPlan plan = createBindingPlan(program, descriptor.bindingLayouts());
         return track(new OpenGLGraphicsState(this, program, vao, descriptor, plan));
-    }
-
-    @Override
-    public ComputeState createComputeState(ComputeStateDescriptor descriptor) {
-        Objects.requireNonNull(descriptor, "descriptor");
-        requireOpen();
-        OpenGLShader compute = owned(descriptor.computeShader(), OpenGLShader.class, "compute shader");
-        makeCurrent();
-        int program = linkProgram(compute);
-        OpenGLBindingPlan plan = createBindingPlan(program, descriptor.bindingLayouts());
-        return track(new OpenGLComputeState(this, program, descriptor, plan));
     }
 
     private int linkProgram(OpenGLShader... shaders) {
@@ -484,10 +469,6 @@ public final class OpenGLDevice implements GraphicsDevice {
                         int index = glGetUniformBlockIndex(program, binding.name());
                         if (index != GL_INVALID_INDEX) glUniformBlockBinding(program, index, slot);
                     }
-                    case STORAGE_BUFFER -> {
-                        int index = glGetProgramResourceIndex(program, GL_SHADER_STORAGE_BLOCK, binding.name());
-                        if (index != GL_INVALID_INDEX) glShaderStorageBlockBinding(program, index, slot);
-                    }
                 }
             }
         }
@@ -523,30 +504,19 @@ public final class OpenGLDevice implements GraphicsDevice {
         makeCurrent();
         int framebuffer = glGenFramebuffers();
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-        for (int i = 0; i < colors.size(); i++) {
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, colors.get(i).handle, 0);
-        }
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colors.get(0).handle, 0);
         if (depth != null) {
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth.handle, 0);
         }
-        if (colors.isEmpty()) {
-            glDrawBuffer(GL_NONE);
-            glReadBuffer(GL_NONE);
-        } else {
-            try (MemoryStack stack = MemoryStack.stackPush()) {
-                IntBuffer drawBuffers = stack.mallocInt(colors.size());
-                for (int i = 0; i < colors.size(); i++) drawBuffers.put(i, GL_COLOR_ATTACHMENT0 + i);
-                glDrawBuffers(drawBuffers);
-            }
-        }
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
         int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             glDeleteFramebuffers(framebuffer);
             throw new IllegalArgumentException("incomplete OpenGL framebuffer: 0x" + Integer.toHexString(status));
         }
-        int width = !colors.isEmpty() ? colors.get(0).width() : depth.width();
-        int height = !colors.isEmpty() ? colors.get(0).height() : depth.height();
+        int width = colors.get(0).width();
+        int height = colors.get(0).height();
         return track(new OpenGLRenderTarget(
                 this,
                 framebuffer,
@@ -592,7 +562,6 @@ public final class OpenGLDevice implements GraphicsDevice {
         glFlush();
     }
 
-    @Override public GraphicsCapabilities capabilities() { requireOpen(); return graphicsCapabilities; }
     public String backendName() { requireOpen(); return "LWJGL OpenGL 4.3"; }
 
     @Override
