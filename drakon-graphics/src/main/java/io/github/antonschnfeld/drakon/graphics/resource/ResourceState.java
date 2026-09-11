@@ -27,14 +27,8 @@ public enum ResourceState {
     VERTEX_READ,
     /** Buffer is read by the index-input stage. */
     INDEX_READ,
-    /** Storage texture or storage buffer is read by shaders. */
-    STORAGE_READ,
-    /** Storage texture or storage buffer is written by shaders. */
-    STORAGE_WRITE,
-    /** Buffer is read as an indirect draw-command source. */
-    INDIRECT_READ,
-    /** Texture or buffer is read as a copy source. */
+    /** Texture is read as a copy source. This state is not valid for buffers. */
     COPY_SRC,
-    /** Texture or buffer is written as a copy destination. */
+    /** Texture is written as a copy destination. This state is not valid for buffers. */
     COPY_DST
 }

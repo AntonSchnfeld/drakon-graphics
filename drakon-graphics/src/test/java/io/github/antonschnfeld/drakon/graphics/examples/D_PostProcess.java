@@ -45,9 +45,9 @@ public final class D_PostProcess {
             Shader sceneFs = shader(device, ShaderStage.FRAGMENT, "// scene fragment");
             GraphicsState sceneState = device.createGraphicsState(GraphicsStateDescriptor.builder()
                     .vertexShader(sceneVs).fragmentShader(sceneFs).vertexLayout(triangleLayout)
-                    .colorFormat(TextureFormat.RGBA16_FLOAT).build());
+                    .colorFormat(TextureFormat.RGBA8_UNORM).build());
 
-            Texture hdr = device.createTexture(new TextureDescriptor(1280, 720, TextureFormat.RGBA16_FLOAT,
+            Texture hdr = device.createTexture(new TextureDescriptor(1280, 720, TextureFormat.RGBA8_UNORM,
                     Set.of(TextureUsage.COLOR_ATTACHMENT, TextureUsage.SAMPLED)));
             RenderTarget hdrTarget = device.createRenderTarget(new RenderTargetDescriptor(List.of(hdr), null));
 

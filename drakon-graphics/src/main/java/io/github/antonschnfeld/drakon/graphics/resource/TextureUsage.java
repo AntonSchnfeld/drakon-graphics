@@ -8,8 +8,6 @@ public enum TextureUsage {
     DEPTH_ATTACHMENT,
     /** Texture may be sampled by shaders. */
     SAMPLED,
-    /** Texture may be accessed as shader storage. */
-    STORAGE,
     /** Texture may be the source of a copy operation. */
     COPY_SRC,
     /** Texture may be the destination of a copy operation. */

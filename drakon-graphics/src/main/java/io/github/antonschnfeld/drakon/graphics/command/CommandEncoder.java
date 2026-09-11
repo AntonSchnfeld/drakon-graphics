@@ -3,7 +3,6 @@ package io.github.antonschnfeld.drakon.graphics.command;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingSet;
 import io.github.antonschnfeld.drakon.graphics.resource.Buffer;
-import io.github.antonschnfeld.drakon.graphics.resource.ComputeState;
 import io.github.antonschnfeld.drakon.graphics.resource.GraphicsState;
 import io.github.antonschnfeld.drakon.graphics.resource.IndexType;
 import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
@@ -51,8 +50,8 @@ public interface CommandEncoder {
     /**
      * Binds graphics state for subsequent draw commands.
      *
-     * <p>The state remains active until replaced by another graphics or compute
-     * state. At draw time its declared attachment formats must match the active
+     * <p>The state remains active until replaced by another graphics state. At
+     * draw time its declared attachment formats must match the active
      * render target.</p>
      *
      * @param state graphics state created by this encoder's device
@@ -61,17 +60,6 @@ public interface CommandEncoder {
      * @throws IllegalStateException if recording has finished
      */
     void setGraphicsState(GraphicsState state);
-
-    /**
-     * Binds compute state for subsequent dispatch commands.
-     *
-     * @param state compute state created by this encoder's device
-     * @throws NullPointerException if {@code state} is {@code null}
-     * @throws IllegalArgumentException if the state belongs to another device
-     * @throws IllegalStateException if called inside a rendering scope or after
-     *         recording has finished
-     */
-    void setComputeState(ComputeState state);
 
     /**
      * Binds a vertex buffer to one vertex-layout binding index.
@@ -100,8 +88,7 @@ public interface CommandEncoder {
     void setIndexBuffer(Buffer buffer, IndexType indexType, long offset);
 
     /**
-     * Binds one resource-binding group for the currently active graphics or
-     * compute state.
+     * Binds one resource-binding group for the currently active graphics state.
      *
      * <p>Group {@code 0} corresponds to the first binding layout supplied to the
      * active state descriptor, group {@code 1} to the second, and so on.</p>
@@ -109,7 +96,7 @@ public interface CommandEncoder {
      * @param group zero-based binding-layout group index
      * @param set binding set whose layout must match the active state's group
      * @throws IllegalArgumentException if the group, layout, or ownership is invalid
-     * @throws IllegalStateException if no graphics/compute state is active or
+     * @throws IllegalStateException if no graphics state is active or
      *         recording has finished
      */
     void bindSet(int group, BindingSet set);
@@ -138,34 +125,6 @@ public interface CommandEncoder {
      * @throws IllegalArgumentException if an argument is invalid
      */
     void drawIndexed(int indexCount, int instanceCount, int firstIndex, int vertexOffset, int firstInstance);
-
-    /**
-     * Records one or more indexed draws whose parameters are read from a GPU buffer.
-     *
-     * <p>The buffer must have indirect usage and be in
-     * {@link ResourceState#INDIRECT_READ} before execution.</p>
-     *
-     * @param indirectBuffer buffer containing backend-neutral indexed-indirect
-     *        command records
-     * @param offset byte offset of the first command; must be 4-byte aligned
-     * @param drawCount number of indirect draws; must be positive
-     * @param stride byte stride between commands; must be positive and 4-byte aligned
-     * @throws IllegalArgumentException if usage, ownership, or arguments are invalid
-     * @throws IllegalStateException if required rendering/graphics state is absent
-     */
-    void drawIndexedIndirect(Buffer indirectBuffer, long offset, int drawCount, int stride);
-
-    /**
-     * Dispatches the active compute state.
-     *
-     * @param groupCountX positive X workgroup count
-     * @param groupCountY positive Y workgroup count
-     * @param groupCountZ positive Z workgroup count
-     * @throws IllegalStateException if a rendering scope is active, no compute
-     *         state is bound, or recording has finished
-     * @throws IllegalArgumentException if any group count is non-positive
-     */
-    void dispatch(int groupCountX, int groupCountY, int groupCountZ);
 
     /**
      * Copies the complete contents of one texture into another texture.
@@ -206,7 +165,10 @@ public interface CommandEncoder {
      *
      * <p>Transitions are recorded outside graphics rendering scopes. With
      * validation enabled, {@code from} must match the device's currently tracked
-     * state for the resource.</p>
+     * state for the resource. Buffer transitions accept only
+     * {@link ResourceState#UNDEFINED}, {@link ResourceState#VERTEX_READ},
+     * {@link ResourceState#INDEX_READ}, and {@link ResourceState#UNIFORM_READ};
+     * copy states are texture-only.</p>
      *
      * @param buffer buffer to transition
      * @param from expected state before the transition

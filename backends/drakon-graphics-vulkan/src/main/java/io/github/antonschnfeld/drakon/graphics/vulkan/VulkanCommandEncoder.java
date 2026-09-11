@@ -20,12 +20,9 @@ final class VulkanCommandEncoder implements CommandEncoder {
     private boolean rendering;
     private boolean finished;
     private VulkanGraphicsState graphicsState;
-    private VulkanComputeState computeState;
     private VulkanTarget renderTarget;
     private VulkanPresentationTarget presentationTarget;
     private VulkanBuffer indexBuffer;
-    private IndexType indexType;
-    private long indexOffset;
     private final Map<Integer, VulkanBuffer> vertexBuffers = new HashMap<>();
 
     VulkanCommandEncoder(VulkanDevice device, VkCommandBuffer commandBuffer) {
@@ -106,7 +103,6 @@ final class VulkanCommandEncoder implements CommandEncoder {
 
         rendering = true;
         renderTarget = target;
-        computeState = null;
     }
 
     @Override
@@ -127,7 +123,6 @@ final class VulkanCommandEncoder implements CommandEncoder {
         if (rendering) validateTargetCompatibility(next, renderTarget);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, next.pipeline);
         graphicsState = next;
-        computeState = null;
     }
 
     private static void validateTargetCompatibility(VulkanGraphicsState state, VulkanTarget target) {
@@ -138,17 +133,6 @@ final class VulkanCommandEncoder implements CommandEncoder {
         if (expectedDepth != target.depthFormat()) {
             throw new IllegalStateException("graphics state depth format does not match active render target");
         }
-    }
-
-    @Override
-    public void setComputeState(ComputeState state) {
-        Objects.requireNonNull(state, "state");
-        requireRecording();
-        if (rendering) throw new IllegalStateException("compute state cannot be set inside rendering");
-        VulkanComputeState next = device.owned(state, VulkanComputeState.class, "compute state");
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, next.pipeline);
-        computeState = next;
-        graphicsState = null;
     }
 
     @Override
@@ -183,8 +167,6 @@ final class VulkanCommandEncoder implements CommandEncoder {
         }
         vkCmdBindIndexBuffer(commandBuffer, vkBuffer.handle, offset, VulkanMappings.indexType(indexType));
         indexBuffer = vkBuffer;
-        this.indexType = indexType;
-        indexOffset = offset;
     }
 
     @Override
@@ -194,25 +176,16 @@ final class VulkanCommandEncoder implements CommandEncoder {
         if (group < 0) throw new IllegalArgumentException("group must be non-negative");
         VulkanBindingSet bindingSet = device.owned(set, VulkanBindingSet.class, "binding set");
         long layout;
-        int bindPoint;
         BindingLayout expected;
-        if (graphicsState != null) {
-            if (group >= graphicsState.setLayouts.size()) throw new IllegalArgumentException("binding group out of range");
-            layout = graphicsState.pipelineLayout;
-            bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            expected = graphicsState.setLayouts.get(group).logical;
-        } else if (computeState != null) {
-            if (group >= computeState.setLayouts.size()) throw new IllegalArgumentException("binding group out of range");
-            layout = computeState.pipelineLayout;
-            bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-            expected = computeState.setLayouts.get(group).logical;
-        } else {
-            throw new IllegalStateException("bindSet requires active graphics or compute state");
-        }
+        if (graphicsState == null) throw new IllegalStateException("bindSet requires active graphics state");
+        if (group >= graphicsState.setLayouts.size()) throw new IllegalArgumentException("binding group out of range");
+        layout = graphicsState.pipelineLayout;
+        expected = graphicsState.setLayouts.get(group).logical;
         if (bindingSet.layout() != expected) throw new IllegalArgumentException("binding set layout does not match active state group");
         validateBindingStates(bindingSet);
         try (MemoryStack stack = stackPush()) {
-            vkCmdBindDescriptorSets(commandBuffer, bindPoint, layout, group, stack.longs(bindingSet.descriptorSet), null);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, group,
+                    stack.longs(bindingSet.descriptorSet), null);
         }
     }
 
@@ -229,12 +202,6 @@ final class VulkanCommandEncoder implements CommandEncoder {
                 case UNIFORM_BUFFER -> {
                     VulkanBuffer buffer = (VulkanBuffer) ((BufferBinding) value).buffer();
                     if (buffer.state != ResourceState.UNIFORM_READ) throw new IllegalStateException("uniform buffer is not in UNIFORM_READ");
-                }
-                case STORAGE_BUFFER -> {
-                    VulkanBuffer buffer = (VulkanBuffer) ((BufferBinding) value).buffer();
-                    if (buffer.state != ResourceState.STORAGE_READ && buffer.state != ResourceState.STORAGE_WRITE) {
-                        throw new IllegalStateException("storage buffer is not in STORAGE_READ or STORAGE_WRITE");
-                    }
                 }
             }
         }
@@ -258,30 +225,6 @@ final class VulkanCommandEncoder implements CommandEncoder {
         requireDraw(indexCount, instanceCount, firstIndex, firstInstance);
         if (indexBuffer == null) throw new IllegalStateException("no index buffer bound");
         vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
-    }
-
-    @Override
-    public void drawIndexedIndirect(Buffer indirectBuffer, long offset, int drawCount, int stride) {
-        Objects.requireNonNull(indirectBuffer, "indirectBuffer");
-        requireRecording();
-        if (!rendering || graphicsState == null || indexBuffer == null) {
-            throw new IllegalStateException("indexed indirect draw requires rendering, graphics state and index buffer");
-        }
-        VulkanBuffer buffer = device.owned(indirectBuffer, VulkanBuffer.class, "indirect buffer");
-        if (!buffer.usage().contains(BufferUsage.INDIRECT)) throw new IllegalArgumentException("buffer lacks INDIRECT usage");
-        if (buffer.state != ResourceState.INDIRECT_READ) throw new IllegalStateException("indirect buffer is not in INDIRECT_READ");
-        if (offset < 0 || (offset & 3) != 0 || drawCount <= 0 || stride <= 0 || (stride & 3) != 0) {
-            throw new IllegalArgumentException("invalid indirect draw arguments");
-        }
-        vkCmdDrawIndexedIndirect(commandBuffer, buffer.handle, offset, drawCount, stride);
-    }
-
-    @Override
-    public void dispatch(int groupCountX, int groupCountY, int groupCountZ) {
-        requireRecording();
-        if (rendering || computeState == null) throw new IllegalStateException("dispatch requires compute state outside rendering");
-        if (groupCountX <= 0 || groupCountY <= 0 || groupCountZ <= 0) throw new IllegalArgumentException("group counts must be positive");
-        vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
     }
 
     @Override
@@ -322,6 +265,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
         requireRecording();
         if (rendering) throw new IllegalStateException("transitions are not allowed inside rendering");
         VulkanTexture vkTexture = device.owned(texture, VulkanTexture.class, "texture");
+        validateTextureState(vkTexture, from);
+        validateTextureState(vkTexture, to);
         validateTransition(vkTexture.state, from, to);
         try (MemoryStack stack = stackPush()) {
             VkImageMemoryBarrier2.Buffer barrier = VkImageMemoryBarrier2.calloc(1, stack);
@@ -354,6 +299,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
         requireRecording();
         if (rendering) throw new IllegalStateException("transitions are not allowed inside rendering");
         VulkanBuffer vkBuffer = device.owned(buffer, VulkanBuffer.class, "buffer");
+        validateBufferState(vkBuffer, from);
+        validateBufferState(vkBuffer, to);
         validateTransition(vkBuffer.state, from, to);
         try (MemoryStack stack = stackPush()) {
             VkBufferMemoryBarrier2.Buffer barrier = VkBufferMemoryBarrier2.calloc(1, stack);
@@ -374,6 +321,30 @@ final class VulkanCommandEncoder implements CommandEncoder {
             vkCmdPipelineBarrier2(commandBuffer, dependency);
         }
         vkBuffer.state = to;
+    }
+
+    private static void validateTextureState(VulkanTexture texture, ResourceState state) {
+        boolean valid = switch (state) {
+            case UNDEFINED -> true;
+            case COLOR_ATTACHMENT_WRITE -> texture.usage().contains(TextureUsage.COLOR_ATTACHMENT);
+            case DEPTH_ATTACHMENT_WRITE -> texture.usage().contains(TextureUsage.DEPTH_ATTACHMENT);
+            case SAMPLED_READ -> texture.usage().contains(TextureUsage.SAMPLED);
+            case COPY_SRC -> texture.usage().contains(TextureUsage.COPY_SRC);
+            case COPY_DST -> texture.usage().contains(TextureUsage.COPY_DST);
+            default -> false;
+        };
+        if (!valid) throw new IllegalArgumentException(state + " is not valid for this texture");
+    }
+
+    private static void validateBufferState(VulkanBuffer buffer, ResourceState state) {
+        boolean valid = switch (state) {
+            case UNDEFINED -> true;
+            case UNIFORM_READ -> buffer.usage().contains(BufferUsage.UNIFORM);
+            case VERTEX_READ -> buffer.usage().contains(BufferUsage.VERTEX);
+            case INDEX_READ -> buffer.usage().contains(BufferUsage.INDEX);
+            default -> false;
+        };
+        if (!valid) throw new IllegalArgumentException(state + " is not valid for this buffer");
     }
 
     private void validateTransition(ResourceState actual, ResourceState from, ResourceState to) {

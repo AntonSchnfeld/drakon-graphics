@@ -12,9 +12,11 @@ import java.util.Optional;
  * Vulkan need them while creating a compatible graphics pipeline; making them
  * explicit avoids hidden backend-specific lazy specialization.</p>
  *
- * <p>Color formats are ordered exactly like the color attachments of a target
- * used with this state. Binding layouts are likewise ordered by binding-group
- * index.</p>
+ * <p>The 0.1.0 contract requires exactly one color attachment and therefore
+ * exactly one non-depth color format plus a fragment shader. An optional depth
+ * format may additionally be declared. The list shape is retained so a future
+ * release can relax the color-attachment limit additively. Binding layouts are
+ * ordered by binding-group index.</p>
  */
 public final class GraphicsStateDescriptor {
     private final Shader vertexShader;
@@ -34,8 +36,8 @@ public final class GraphicsStateDescriptor {
             throw new IllegalArgumentException("vertexShader must be VERTEX stage");
         }
 
-        fragmentShader = b.fragmentShader;
-        if (fragmentShader != null && fragmentShader.stage() != ShaderStage.FRAGMENT) {
+        fragmentShader = Objects.requireNonNull(b.fragmentShader, "fragmentShader");
+        if (fragmentShader.stage() != ShaderStage.FRAGMENT) {
             throw new IllegalArgumentException("fragmentShader must be FRAGMENT stage");
         }
 
@@ -48,6 +50,9 @@ public final class GraphicsStateDescriptor {
         colorFormats = List.copyOf(b.colorFormats);
         depthFormat = b.depthFormat;
 
+        if (colorFormats.size() != 1) {
+            throw new IllegalArgumentException("graphics state requires exactly one color format");
+        }
         for (TextureFormat format : colorFormats) {
             if (format.isDepth()) {
                 throw new IllegalArgumentException("color format must not be a depth format");
@@ -55,9 +60,6 @@ public final class GraphicsStateDescriptor {
         }
         if (depthFormat != null && !depthFormat.isDepth()) {
             throw new IllegalArgumentException("depthFormat must be a depth format");
-        }
-        if (fragmentShader == null && !colorFormats.isEmpty()) {
-            throw new IllegalArgumentException("color outputs require a fragment shader");
         }
         if ((depthState.testEnabled() || depthState.writeEnabled()) && depthFormat == null) {
             throw new IllegalArgumentException("enabled depth state requires depthFormat");
@@ -71,12 +73,12 @@ public final class GraphicsStateDescriptor {
     }
 
     /**
-     * Returns the fragment shader when rasterized color/fragment processing is used.
+     * Returns the required fragment shader.
      *
-     * @return optional fragment-stage shader
+     * @return required fragment-stage shader
      */
-    public Optional<Shader> fragmentShader() {
-        return Optional.ofNullable(fragmentShader);
+    public Shader fragmentShader() {
+        return fragmentShader;
     }
 
     /** Returns the immutable vertex-input layout.
@@ -121,7 +123,7 @@ public final class GraphicsStateDescriptor {
     /**
      * Returns expected color attachment formats in target attachment order.
      *
-     * @return immutable ordered color-format list; may be empty for depth-only rendering
+     * @return immutable list containing exactly one color format
      */
     public List<TextureFormat> colorFormats() {
         return colorFormats;
@@ -174,7 +176,7 @@ public final class GraphicsStateDescriptor {
         }
 
         /**
-         * Sets the optional fragment shader.
+         * Sets the required fragment shader.
          *
          * @param value fragment-stage shader
          * @return this builder
@@ -285,8 +287,7 @@ public final class GraphicsStateDescriptor {
          * Builds and validates the complete graphics-state descriptor.
          *
          * @return immutable graphics-state descriptor
-         * @throws NullPointerException if required state, especially the vertex
-         *         shader, is missing
+         * @throws NullPointerException if a required shader or state is missing
          * @throws IllegalArgumentException if shader stages, formats, or depth
          *         configuration are inconsistent
          */

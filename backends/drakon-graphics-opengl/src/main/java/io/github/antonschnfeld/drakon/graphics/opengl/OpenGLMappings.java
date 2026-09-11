@@ -7,7 +7,6 @@ import static org.lwjgl.opengl.GL12C.GL_BGRA;
 import static org.lwjgl.opengl.GL20C.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL31C.GL_UNIFORM_BUFFER;
-import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER;
 
 final class OpenGLMappings {
     private OpenGLMappings() {}
@@ -15,14 +14,13 @@ final class OpenGLMappings {
     static int textureInternalFormat(TextureFormat format) {
         return switch (format) {
             case RGBA8_UNORM, BGRA8_UNORM -> GL_RGBA8;
-            case RGBA16_FLOAT -> GL_RGBA16F;
             case D32_FLOAT -> GL_DEPTH_COMPONENT32F;
         };
     }
 
     static int textureExternalFormat(TextureFormat format) {
         return switch (format) {
-            case RGBA8_UNORM, RGBA16_FLOAT -> GL_RGBA;
+            case RGBA8_UNORM -> GL_RGBA;
             case BGRA8_UNORM -> GL_BGRA;
             case D32_FLOAT -> GL_DEPTH_COMPONENT;
         };
@@ -31,7 +29,6 @@ final class OpenGLMappings {
     static int textureExternalType(TextureFormat format) {
         return switch (format) {
             case RGBA8_UNORM, BGRA8_UNORM -> GL_UNSIGNED_BYTE;
-            case RGBA16_FLOAT -> GL_HALF_FLOAT;
             case D32_FLOAT -> GL_FLOAT;
         };
     }
@@ -74,7 +71,6 @@ final class OpenGLMappings {
     static int bufferTarget(BindingType type) {
         return switch (type) {
             case UNIFORM_BUFFER -> GL_UNIFORM_BUFFER;
-            case STORAGE_BUFFER -> GL_SHADER_STORAGE_BUFFER;
             case SAMPLED_TEXTURE -> throw new IllegalArgumentException("sampled textures are not buffer bindings");
         };
     }
@@ -83,7 +79,6 @@ final class OpenGLMappings {
         return switch (type) {
             case SAMPLED_TEXTURE -> org.lwjgl.opengl.GL11C.glGetInteger(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS);
             case UNIFORM_BUFFER -> org.lwjgl.opengl.GL11C.glGetInteger(org.lwjgl.opengl.GL31C.GL_MAX_UNIFORM_BUFFER_BINDINGS);
-            case STORAGE_BUFFER -> org.lwjgl.opengl.GL11C.glGetInteger(org.lwjgl.opengl.GL43C.GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS);
         };
     }
 }

@@ -22,7 +22,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     private boolean rendering;
     private boolean finished;
     private OpenGLGraphicsState graphicsState;
-    private OpenGLComputeState computeState;
 
     OpenGLCommandEncoder(OpenGLDevice device, boolean validation) {
         this.device = device;
@@ -50,7 +49,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         OpenGLRenderTarget target = owned(info.target(), OpenGLRenderTarget.class, "render target");
         validateAttachmentStates(target);
         rendering = true;
-        computeState = null;
         commands.add(context -> beginRenderingNow(context, target, info));
     }
 
@@ -141,11 +139,9 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         requireRecording();
         OpenGLGraphicsState next = owned(state, OpenGLGraphicsState.class, "graphics state");
         graphicsState = next;
-        computeState = null;
         commands.add(context -> {
             next.requireAlive();
             context.graphicsState = next;
-            context.computeState = null;
             glUseProgram(next.program);
             glBindVertexArray(next.vao);
             applyFixedState(next.descriptor);
@@ -177,23 +173,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             glCullFace(OpenGLMappings.cull(cull));
         }
         glFrontFace(GL_CCW);
-        glPolygonMode(GL_FRONT_AND_BACK, descriptor.rasterState().wireframe() ? GL_LINE : GL_FILL);
-    }
-
-    @Override
-    public void setComputeState(ComputeState state) {
-        requireRecording();
-        if (rendering) throw new IllegalStateException("compute state cannot be set inside rendering");
-        OpenGLComputeState next = owned(state, OpenGLComputeState.class, "compute state");
-        computeState = next;
-        graphicsState = null;
-        commands.add(context -> {
-            next.requireAlive();
-            context.computeState = next;
-            context.graphicsState = null;
-            glBindVertexArray(0);
-            glUseProgram(next.program);
-        });
     }
 
     @Override
@@ -227,10 +206,8 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         requireRecording();
         if (group < 0) throw new IllegalArgumentException("group must be non-negative");
         OpenGLBindingSet bindingSet = owned(set, OpenGLBindingSet.class, "binding set");
-        OpenGLBindingPlan plan;
-        if (graphicsState != null) plan = graphicsState.bindings;
-        else if (computeState != null) plan = computeState.bindings;
-        else throw new IllegalStateException("bindSet requires an active graphics or compute state");
+        if (graphicsState == null) throw new IllegalStateException("bindSet requires an active graphics state");
+        OpenGLBindingPlan plan = graphicsState.bindings;
         if (bindingSet.layout() != plan.layout(group)) {
             throw new IllegalArgumentException("binding set layout does not match active state group " + group);
         }
@@ -238,7 +215,8 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     }
 
     private static void bindSetNow(OpenGLExecutionContext context, int group, OpenGLBindingSet set) {
-        OpenGLBindingPlan plan = context.graphicsState != null ? context.graphicsState.bindings : context.computeState.bindings;
+        if (context.graphicsState == null) throw new IllegalStateException("graphics state missing at execution");
+        OpenGLBindingPlan plan = context.graphicsState.bindings;
         if (set.layout() != plan.layout(group)) throw new IllegalStateException("binding layout changed incompatibly");
         for (Binding<?> binding : set.layout().bindings()) {
             Object value = set.descriptor.values().get(binding);
@@ -253,16 +231,10 @@ final class OpenGLCommandEncoder implements CommandEncoder {
                     glBindTexture(GL_TEXTURE_2D, texture.handle);
                     glBindSampler(slot, sampler.handle);
                 }
-                case UNIFORM_BUFFER, STORAGE_BUFFER -> {
+                case UNIFORM_BUFFER -> {
                     BufferBinding range = (BufferBinding) value;
                     OpenGLBuffer buffer = (OpenGLBuffer) range.buffer();
-                    ResourceState expected = binding.type() == BindingType.UNIFORM_BUFFER
-                            ? ResourceState.UNIFORM_READ
-                            : null;
-                    if (expected != null) requireExactState(buffer.state, expected, "uniform buffer");
-                    else if (buffer.state != ResourceState.STORAGE_READ && buffer.state != ResourceState.STORAGE_WRITE) {
-                        throw new IllegalStateException("storage buffer is not in STORAGE_READ or STORAGE_WRITE");
-                    }
+                    requireExactState(buffer.state, ResourceState.UNIFORM_READ, "uniform buffer");
                     glBindBufferRange(
                             OpenGLMappings.bufferTarget(binding.type()),
                             slot,
@@ -328,32 +300,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         });
     }
 
-    @Override
-    public void drawIndexedIndirect(Buffer indirectBuffer, long offset, int drawCount, int stride) {
-        requireRecording();
-        OpenGLBuffer indirect = owned(indirectBuffer, OpenGLBuffer.class, "indirect buffer");
-        if (!indirect.usage().contains(BufferUsage.INDIRECT)) throw new IllegalArgumentException("buffer lacks INDIRECT usage");
-        if (offset < 0 || offset % 4 != 0 || drawCount <= 0 || stride < 20 || stride % 4 != 0) {
-            throw new IllegalArgumentException("invalid indexed-indirect arguments; stride must be >= 20 and 4-byte aligned");
-        }
-        if (!rendering || graphicsState == null) throw new IllegalStateException("indirect draw requires rendering and graphics state");
-        commands.add(context -> {
-            validateDrawContext(context);
-            if (context.indexBuffer == null) throw new IllegalStateException("indexed indirect draw requires index buffer");
-            requireState(indirect.state, ResourceState.INDIRECT_READ, "indirect buffer");
-            bindVertexBuffers(context);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, context.indexBuffer.handle);
-            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect.handle);
-            glMultiDrawElementsIndirect(
-                    OpenGLMappings.primitive(context.graphicsState.descriptor.topology()),
-                    OpenGLMappings.indexType(context.indexType),
-                    offset,
-                    drawCount,
-                    stride);
-            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
-        });
-    }
-
     private static void validateDrawContext(OpenGLExecutionContext context) {
         if (context.renderTarget == null || context.graphicsState == null) throw new IllegalStateException("draw state missing at execution");
         if (!context.graphicsState.descriptor.colorFormats().equals(context.renderTarget.colorFormats())) {
@@ -373,17 +319,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             }
             glBindVertexBuffer(binding.binding(), value.buffer().handle, value.offset(), binding.stride());
         }
-    }
-
-    @Override
-    public void dispatch(int groupCountX, int groupCountY, int groupCountZ) {
-        requireRecording();
-        if (rendering || computeState == null) throw new IllegalStateException("dispatch requires compute state outside rendering");
-        if (groupCountX <= 0 || groupCountY <= 0 || groupCountZ <= 0) throw new IllegalArgumentException("workgroup counts must be positive");
-        commands.add(context -> {
-            if (context.computeState == null) throw new IllegalStateException("compute state missing at execution");
-            glDispatchCompute(groupCountX, groupCountY, groupCountZ);
-        });
     }
 
     @Override
@@ -413,6 +348,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         requireRecording();
         if (rendering) throw new IllegalStateException("transitions are not allowed inside rendering");
         OpenGLTexture resource = owned(texture, OpenGLTexture.class, "texture");
+        validateTextureState(resource, from);
         validateTextureState(resource, to);
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("UNDEFINED cannot be a transition destination");
         commands.add(context -> {
@@ -429,6 +365,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         requireRecording();
         if (rendering) throw new IllegalStateException("transitions are not allowed inside rendering");
         OpenGLBuffer resource = owned(buffer, OpenGLBuffer.class, "buffer");
+        validateBufferState(resource, from);
         validateBufferState(resource, to);
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("UNDEFINED cannot be a transition destination");
         commands.add(context -> {
@@ -445,7 +382,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             case COLOR_ATTACHMENT_WRITE -> requireUsage(texture.usage().contains(TextureUsage.COLOR_ATTACHMENT), "COLOR_ATTACHMENT");
             case DEPTH_ATTACHMENT_WRITE -> requireUsage(texture.usage().contains(TextureUsage.DEPTH_ATTACHMENT), "DEPTH_ATTACHMENT");
             case SAMPLED_READ -> requireUsage(texture.usage().contains(TextureUsage.SAMPLED), "SAMPLED");
-            case STORAGE_READ, STORAGE_WRITE -> requireUsage(texture.usage().contains(TextureUsage.STORAGE), "STORAGE");
             case COPY_SRC -> requireUsage(texture.usage().contains(TextureUsage.COPY_SRC), "COPY_SRC");
             case COPY_DST -> requireUsage(texture.usage().contains(TextureUsage.COPY_DST), "COPY_DST");
             case UNDEFINED -> { }
@@ -458,10 +394,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             case UNIFORM_READ -> requireUsage(buffer.usage().contains(BufferUsage.UNIFORM), "UNIFORM");
             case VERTEX_READ -> requireUsage(buffer.usage().contains(BufferUsage.VERTEX), "VERTEX");
             case INDEX_READ -> requireUsage(buffer.usage().contains(BufferUsage.INDEX), "INDEX");
-            case STORAGE_READ, STORAGE_WRITE -> requireUsage(buffer.usage().contains(BufferUsage.STORAGE), "STORAGE");
-            case INDIRECT_READ -> requireUsage(buffer.usage().contains(BufferUsage.INDIRECT), "INDIRECT");
-            case COPY_SRC -> requireUsage(buffer.usage().contains(BufferUsage.COPY_SRC), "COPY_SRC");
-            case COPY_DST -> requireUsage(buffer.usage().contains(BufferUsage.COPY_DST), "COPY_DST");
             case UNDEFINED -> { }
             default -> throw new IllegalArgumentException(state + " is not a buffer state");
         }
@@ -472,7 +404,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     }
 
     private static void issueBarrier(ResourceState from, ResourceState to) {
-        if (from != ResourceState.STORAGE_WRITE && from != ResourceState.COPY_DST
+        if (from != ResourceState.COPY_DST
                 && from != ResourceState.COLOR_ATTACHMENT_WRITE && from != ResourceState.DEPTH_ATTACHMENT_WRITE) {
             return;
         }
@@ -481,9 +413,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             case UNIFORM_READ -> GL_UNIFORM_BARRIER_BIT;
             case VERTEX_READ -> GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT;
             case INDEX_READ -> GL_ELEMENT_ARRAY_BARRIER_BIT;
-            case STORAGE_READ, STORAGE_WRITE -> GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
-            case INDIRECT_READ -> GL_COMMAND_BARRIER_BIT;
-            case COPY_SRC, COPY_DST -> GL_TEXTURE_UPDATE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT;
+            case COPY_SRC, COPY_DST -> GL_TEXTURE_UPDATE_BARRIER_BIT;
             case COLOR_ATTACHMENT_WRITE, DEPTH_ATTACHMENT_WRITE -> GL_FRAMEBUFFER_BARRIER_BIT;
             case UNDEFINED -> 0;
         };

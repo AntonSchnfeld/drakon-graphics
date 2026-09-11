@@ -13,7 +13,7 @@ import java.util.Objects;
  *
  * <p>The generic {@link #createDevice(GraphicsDeviceConfig)} path creates a
  * small invisible GLFW window and owns its OpenGL context. This keeps the core
- * backend contract usable for offscreen/compute work without adding window
+ * backend contract usable for offscreen graphics work without adding window
  * concepts to {@code drakon-graphics}. Applications that explicitly want a
  * GLFW-backed presentation target may use {@link #createWindowedDevice}.</p>
  *

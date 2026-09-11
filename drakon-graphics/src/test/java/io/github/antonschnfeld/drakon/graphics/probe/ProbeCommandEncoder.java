@@ -21,7 +21,6 @@ final class ProbeCommandEncoder implements CommandEncoder {
     private RenderingInfo activeRendering;
     private boolean finished;
     private ProbeResources.ProbeGraphicsState graphicsState;
-    private ProbeResources.ProbeComputeState computeState;
     private Buffer indexBuffer;
 
     ProbeCommandEncoder(
@@ -96,19 +95,8 @@ final class ProbeCommandEncoder implements CommandEncoder {
         owned(Objects.requireNonNull(state, "state"));
         if (!(state instanceof ProbeResources.ProbeGraphicsState probe)) throw new IllegalArgumentException("foreign graphics state");
         graphicsState = probe;
-        computeState = null;
         if (validation && activeRendering != null) validateTargetCompatibility(probe.descriptor(), activeRendering.target());
         ops.add(backendName + ": graphicsState=" + debugId(state));
-    }
-
-    @Override public void setComputeState(ComputeState state) {
-        open();
-        outsideRendering("setComputeState");
-        owned(Objects.requireNonNull(state, "state"));
-        if (!(state instanceof ProbeResources.ProbeComputeState probe)) throw new IllegalArgumentException("foreign compute state");
-        computeState = probe;
-        graphicsState = null;
-        ops.add(backendName + ": computeState=" + debugId(state));
     }
 
     @Override public void setVertexBuffer(int binding, Buffer buffer, long offset) {
@@ -139,10 +127,8 @@ final class ProbeCommandEncoder implements CommandEncoder {
         if (group < 0) throw new IllegalArgumentException("group must be >= 0");
         if (!(set instanceof ProbeResources.ProbeBindingSet probeSet)) throw new IllegalArgumentException("foreign binding set");
 
-        List<BindingLayout> expected;
-        if (graphicsState != null) expected = graphicsState.descriptor().bindingLayouts();
-        else if (computeState != null) expected = computeState.descriptor().bindingLayouts();
-        else throw new IllegalStateException("bindSet requires an active graphics or compute state");
+        if (graphicsState == null) throw new IllegalStateException("bindSet requires an active graphics state");
+        List<BindingLayout> expected = graphicsState.descriptor().bindingLayouts();
 
         if (group >= expected.size()) throw new IllegalArgumentException("binding group " + group + " is not declared by the active state");
         if (validation && expected.get(group) != set.layout()) {
@@ -168,28 +154,6 @@ final class ProbeCommandEncoder implements CommandEncoder {
             throw new IllegalArgumentException("invalid indexed draw arguments");
         }
         ops.add(backendName + ": drawIndexed indices=" + indexCount + " instances=" + instanceCount);
-    }
-
-    @Override public void drawIndexedIndirect(Buffer indirectBuffer, long offset, int drawCount, int stride) {
-        open();
-        requireGraphicsDraw(true);
-        owned(Objects.requireNonNull(indirectBuffer, "indirectBuffer"));
-        requireBufferUsage(indirectBuffer, BufferUsage.INDIRECT);
-        if (offset < 0 || offset % 4 != 0 || drawCount <= 0 || stride <= 0 || stride % 4 != 0) {
-            throw new IllegalArgumentException("invalid indirect draw arguments");
-        }
-        if (validation) requireBufferState(indirectBuffer, ResourceState.INDIRECT_READ);
-        ops.add(backendName + ": drawIndexedIndirect draws=" + drawCount);
-    }
-
-    @Override public void dispatch(int x, int y, int z) {
-        open();
-        outsideRendering("dispatch");
-        if (computeState == null) throw new IllegalStateException("no compute state");
-        if (x <= 0 || y <= 0 || z <= 0) throw new IllegalArgumentException("dispatch dimensions must be > 0");
-        validateRequiredBindingSets(computeState.descriptor().bindingLayouts());
-        validateBoundResourceStates();
-        ops.add(backendName + ": dispatch=" + x + "x" + y + "x" + z);
     }
 
     @Override public void copyTexture(Texture source, Texture destination) {
@@ -218,6 +182,7 @@ final class ProbeCommandEncoder implements CommandEncoder {
         Objects.requireNonNull(from, "from");
         Objects.requireNonNull(to, "to");
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("cannot transition into UNDEFINED");
+        validateTextureStateUsage(texture, from);
         validateTextureStateUsage(texture, to);
         ResourceState current = textureStates.getOrDefault(texture, ResourceState.UNDEFINED);
         if (validation && current != from) {
@@ -234,6 +199,7 @@ final class ProbeCommandEncoder implements CommandEncoder {
         Objects.requireNonNull(from, "from");
         Objects.requireNonNull(to, "to");
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("cannot transition into UNDEFINED");
+        validateBufferStateUsage(buffer, from);
         validateBufferStateUsage(buffer, to);
         ResourceState current = bufferStates.getOrDefault(buffer, ResourceState.UNDEFINED);
         if (validation && current != from) {
@@ -287,9 +253,7 @@ final class ProbeCommandEncoder implements CommandEncoder {
 
     private void validateBoundResourceStates() {
         if (!validation) return;
-        List<BindingLayout> layouts = graphicsState != null
-                ? graphicsState.descriptor().bindingLayouts()
-                : computeState.descriptor().bindingLayouts();
+        List<BindingLayout> layouts = graphicsState.descriptor().bindingLayouts();
 
         for (int group = 0; group < layouts.size(); group++) {
             ProbeResources.ProbeBindingSet set = boundSets.get(group);
@@ -300,13 +264,6 @@ final class ProbeCommandEncoder implements CommandEncoder {
                 switch (binding.type()) {
                     case SAMPLED_TEXTURE -> requireTextureState(((TextureBinding) value).texture(), ResourceState.SAMPLED_READ);
                     case UNIFORM_BUFFER -> requireBufferState(((BufferBinding) value).buffer(), ResourceState.UNIFORM_READ);
-                    case STORAGE_BUFFER -> {
-                        Buffer buffer = ((BufferBinding) value).buffer();
-                        ResourceState state = bufferStates.getOrDefault(buffer, ResourceState.UNDEFINED);
-                        if (state != ResourceState.STORAGE_READ && state != ResourceState.STORAGE_WRITE) {
-                            throw new IllegalStateException("storage buffer " + debugId(buffer) + " is not in a storage state");
-                        }
-                    }
                 }
             }
         }
@@ -350,10 +307,10 @@ final class ProbeCommandEncoder implements CommandEncoder {
             case COLOR_ATTACHMENT_WRITE -> requireTextureUsage(texture, TextureUsage.COLOR_ATTACHMENT);
             case DEPTH_ATTACHMENT_WRITE -> requireTextureUsage(texture, TextureUsage.DEPTH_ATTACHMENT);
             case SAMPLED_READ -> requireTextureUsage(texture, TextureUsage.SAMPLED);
-            case STORAGE_READ, STORAGE_WRITE -> requireTextureUsage(texture, TextureUsage.STORAGE);
             case COPY_SRC -> requireTextureUsage(texture, TextureUsage.COPY_SRC);
             case COPY_DST -> requireTextureUsage(texture, TextureUsage.COPY_DST);
-            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ, INDIRECT_READ ->
+            case UNDEFINED -> { }
+            case UNIFORM_READ, VERTEX_READ, INDEX_READ ->
                     throw new IllegalArgumentException("state " + state + " is not valid for textures");
         }
     }
@@ -363,11 +320,8 @@ final class ProbeCommandEncoder implements CommandEncoder {
             case UNIFORM_READ -> requireBufferUsage(buffer, BufferUsage.UNIFORM);
             case VERTEX_READ -> requireBufferUsage(buffer, BufferUsage.VERTEX);
             case INDEX_READ -> requireBufferUsage(buffer, BufferUsage.INDEX);
-            case STORAGE_READ, STORAGE_WRITE -> requireBufferUsage(buffer, BufferUsage.STORAGE);
-            case INDIRECT_READ -> requireBufferUsage(buffer, BufferUsage.INDIRECT);
-            case COPY_SRC -> requireBufferUsage(buffer, BufferUsage.COPY_SRC);
-            case COPY_DST -> requireBufferUsage(buffer, BufferUsage.COPY_DST);
-            case UNDEFINED, SAMPLED_READ, COLOR_ATTACHMENT_WRITE, DEPTH_ATTACHMENT_WRITE ->
+            case UNDEFINED -> { }
+            case COPY_SRC, COPY_DST, SAMPLED_READ, COLOR_ATTACHMENT_WRITE, DEPTH_ATTACHMENT_WRITE ->
                     throw new IllegalArgumentException("state " + state + " is not valid for buffers");
         }
     }

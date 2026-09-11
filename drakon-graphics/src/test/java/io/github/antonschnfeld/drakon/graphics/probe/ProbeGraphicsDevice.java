@@ -4,7 +4,6 @@ import io.github.antonschnfeld.drakon.graphics.backend.*;
 import io.github.antonschnfeld.drakon.graphics.command.*;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 import io.github.antonschnfeld.drakon.graphics.shader.*;
-import io.github.antonschnfeld.drakon.graphics.backend.GraphicsCapabilities;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.command.CommandEncoder;
 import io.github.antonschnfeld.drakon.graphics.command.CommandList;
@@ -95,6 +94,9 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         Objects.requireNonNull(descriptor, "descriptor");
         Objects.requireNonNull(initialData, "initialData");
         Objects.requireNonNull(initialState, "initialState");
+        if (descriptor.format().isDepth()) {
+            throw new IllegalArgumentException("CPU initialization of depth textures is not supported");
+        }
         long required = textureByteCount(descriptor);
         if (initialData.remaining() != required) {
             throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
@@ -118,7 +120,6 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
         int bytesPerTexel = switch (descriptor.format()) {
             case RGBA8_UNORM, BGRA8_UNORM, D32_FLOAT -> 4;
-            case RGBA16_FLOAT -> 8;
         };
         return Math.multiplyExact(texels, bytesPerTexel);
     }
@@ -128,10 +129,9 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
             case COLOR_ATTACHMENT_WRITE -> TextureUsage.COLOR_ATTACHMENT;
             case DEPTH_ATTACHMENT_WRITE -> TextureUsage.DEPTH_ATTACHMENT;
             case SAMPLED_READ -> TextureUsage.SAMPLED;
-            case STORAGE_READ, STORAGE_WRITE -> TextureUsage.STORAGE;
             case COPY_SRC -> TextureUsage.COPY_SRC;
             case COPY_DST -> TextureUsage.COPY_DST;
-            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ, INDIRECT_READ ->
+            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ ->
                     throw new IllegalArgumentException(state + " is not a valid initialized texture state");
         };
         if (!descriptor.usage().contains(requiredUsage)) {
@@ -163,15 +163,8 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         ensureOpen();
         Objects.requireNonNull(descriptor, "descriptor");
         requireOwned(descriptor.vertexShader());
-        descriptor.fragmentShader().ifPresent(this::requireOwned);
+        requireOwned(descriptor.fragmentShader());
         return own(new ProbeResources.ProbeGraphicsState(this, id(), descriptor));
-    }
-
-    @Override public ComputeState createComputeState(ComputeStateDescriptor descriptor) {
-        ensureOpen();
-        Objects.requireNonNull(descriptor, "descriptor");
-        requireOwned(descriptor.computeShader());
-        return own(new ProbeResources.ProbeComputeState(this, id(), descriptor));
     }
 
     @Override public BindingSet createBindingSet(BindingSetDescriptor descriptor) {
@@ -200,8 +193,8 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         ensureOpen();
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("presentation extent must be positive");
         Objects.requireNonNull(colorFormats, "colorFormats");
-        if (colorFormats.isEmpty() && depthFormat == null) {
-            throw new IllegalArgumentException("presentation target needs at least one attachment format");
+        if (colorFormats.size() != 1) {
+            throw new IllegalArgumentException("presentation target requires exactly one color format");
         }
         return own(new ProbeResources.ProbeRenderTarget(
                 this, id(), width, height, colorFormats, depthFormat));
@@ -230,11 +223,6 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         if (list.submitted()) throw new IllegalArgumentException("command list already submitted");
         if (validation && list.operations().isEmpty()) throw new IllegalStateException("empty command list");
         list.markSubmitted();
-    }
-
-    @Override public GraphicsCapabilities capabilities() {
-        ensureOpen();
-        return new GraphicsCapabilities(true, true, true);
     }
 
     @Override public void close() {

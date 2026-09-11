@@ -40,13 +40,18 @@ public final class C_ShadowAndMainPass {
 
             Texture shadowDepth = device.createTexture(new TextureDescriptor(2048, 2048, TextureFormat.D32_FLOAT,
                     Set.of(TextureUsage.DEPTH_ATTACHMENT, TextureUsage.SAMPLED)));
-            RenderTarget shadowTarget = device.createRenderTarget(new RenderTargetDescriptor(List.of(), shadowDepth));
+            Texture shadowColor = device.createTexture(new TextureDescriptor(2048, 2048, TextureFormat.RGBA8_UNORM,
+                    Set.of(TextureUsage.COLOR_ATTACHMENT)));
+            RenderTarget shadowTarget = device.createRenderTarget(new RenderTargetDescriptor(List.of(shadowColor), shadowDepth));
 
-            Shader shadowVs = shader(device, ShaderStage.VERTEX, "// depth-only shadow vertex shader");
+            Shader shadowVs = shader(device, ShaderStage.VERTEX, "// shadow vertex shader");
+            Shader shadowFs = shader(device, ShaderStage.FRAGMENT, "// shadow fragment shader");
             GraphicsState shadowState = device.createGraphicsState(GraphicsStateDescriptor.builder()
                     .vertexShader(shadowVs)
+                    .fragmentShader(shadowFs)
                     .vertexLayout(layout)
                     .depth(DepthState.standard())
+                    .colorFormat(TextureFormat.RGBA8_UNORM)
                     .depthFormat(TextureFormat.D32_FLOAT)
                     .build());
 
@@ -64,19 +69,21 @@ public final class C_ShadowAndMainPass {
                     .fragmentShader(mainFs)
                     .vertexLayout(layout)
                     .depth(DepthState.standard())
-                    .colorFormat(TextureFormat.RGBA16_FLOAT)
+                    .colorFormat(TextureFormat.RGBA8_UNORM)
                     .depthFormat(TextureFormat.D32_FLOAT)
                     .bindingLayout(shadowBindings)
                     .build());
 
-            Texture color = device.createTexture(new TextureDescriptor(1280, 720, TextureFormat.RGBA16_FLOAT, Set.of(TextureUsage.COLOR_ATTACHMENT)));
+            Texture color = device.createTexture(new TextureDescriptor(1280, 720, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.COLOR_ATTACHMENT)));
             Texture depth = device.createTexture(new TextureDescriptor(1280, 720, TextureFormat.D32_FLOAT, Set.of(TextureUsage.DEPTH_ATTACHMENT)));
             RenderTarget mainTarget = device.createRenderTarget(new RenderTargetDescriptor(List.of(color), depth));
             RenderView mainView = RenderView.fullTarget(mainTarget);
 
             RenderPass shadowPass = commands -> {
+                commands.transition(shadowColor, ResourceState.UNDEFINED, ResourceState.COLOR_ATTACHMENT_WRITE);
                 commands.transition(shadowDepth, ResourceState.UNDEFINED, ResourceState.DEPTH_ATTACHMENT_WRITE);
                 commands.beginRendering(RenderingInfo.builder(shadowTarget)
+                        .color(ColorAttachmentOps.clear(Color.BLACK))
                         .depth(DepthAttachmentOps.clear(1.0f))
                         .build());
                 commands.setGraphicsState(shadowState);

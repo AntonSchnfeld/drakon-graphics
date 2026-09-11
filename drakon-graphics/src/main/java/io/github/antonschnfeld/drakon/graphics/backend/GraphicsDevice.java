@@ -6,8 +6,6 @@ import io.github.antonschnfeld.drakon.graphics.resource.BindingSet;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingSetDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.Buffer;
 import io.github.antonschnfeld.drakon.graphics.resource.BufferDescriptor;
-import io.github.antonschnfeld.drakon.graphics.resource.ComputeState;
-import io.github.antonschnfeld.drakon.graphics.resource.ComputeStateDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.GraphicsState;
 import io.github.antonschnfeld.drakon.graphics.resource.GraphicsStateDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.RenderTarget;
@@ -103,7 +101,9 @@ public interface GraphicsDevice extends AutoCloseable {
      * than {@link ResourceState#UNDEFINED}
      * and must be compatible with a usage declared by {@code descriptor}.
      * Internal upload mechanics do not require application-visible
-     * {@code COPY_DST} usage.</p>
+     * {@code COPY_DST} usage. Depth-format textures cannot be initialized from
+     * CPU data because the current portable API does not define a CPU byte
+     * representation for depth texels.</p>
      *
      * @param descriptor texture dimensions, format, and intended usages
      * @param initialData complete tightly packed mip-level-zero texel bytes
@@ -112,7 +112,8 @@ public interface GraphicsDevice extends AutoCloseable {
      * @throws NullPointerException if any argument is {@code null}
      * @throws IllegalArgumentException if the byte count is not exact, the
      *         state is not a texture state, is {@code UNDEFINED}, or is
-     *         incompatible with the descriptor usage
+     *         incompatible with the descriptor usage, or the texture format is
+     *         a depth format
      * @throws IllegalStateException if this device is closed
      */
     Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState);
@@ -175,22 +176,6 @@ public interface GraphicsDevice extends AutoCloseable {
      * @throws IllegalStateException if this device is closed
      */
     GraphicsState createGraphicsState(GraphicsStateDescriptor descriptor);
-
-    /**
-     * Creates backend compute state.
-     *
-     * <p>The compute shader only needs to remain valid until this method returns
-     * successfully; the resulting state is self-contained for later command
-     * recording.</p>
-     *
-     * @param descriptor compute shader and binding layouts
-     * @return a compute-state resource
-     * @throws NullPointerException if {@code descriptor} is {@code null}
-     * @throws UnsupportedOperationException if compute is not supported by this
-     *         device
-     * @throws IllegalStateException if this device is closed
-     */
-    ComputeState createComputeState(ComputeStateDescriptor descriptor);
 
     /**
      * Creates an immutable set of resource bindings.
@@ -269,14 +254,6 @@ public interface GraphicsDevice extends AutoCloseable {
      * @throws IllegalStateException if this device is closed
      */
     void submit(CommandList commands);
-
-    /**
-     * Returns a snapshot of optional features supported by this device.
-     *
-     * @return device capabilities
-     * @throws IllegalStateException if this device is closed
-     */
-    GraphicsCapabilities capabilities();
 
     /**
      * Closes this device and safely releases all resources still owned by it.

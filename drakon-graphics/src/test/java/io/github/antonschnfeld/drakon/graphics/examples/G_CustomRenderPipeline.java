@@ -46,9 +46,9 @@ public final class G_CustomRenderPipeline {
             Shader firstFs = shader(device, ShaderStage.FRAGMENT, "// stage one fragment");
             GraphicsState firstState = device.createGraphicsState(GraphicsStateDescriptor.builder()
                     .vertexShader(firstVs).fragmentShader(firstFs).vertexLayout(layout)
-                    .colorFormat(TextureFormat.RGBA16_FLOAT).build());
+                    .colorFormat(TextureFormat.RGBA8_UNORM).build());
 
-            Texture intermediate = device.createTexture(new TextureDescriptor(640, 360, TextureFormat.RGBA16_FLOAT,
+            Texture intermediate = device.createTexture(new TextureDescriptor(640, 360, TextureFormat.RGBA8_UNORM,
                     Set.of(TextureUsage.COLOR_ATTACHMENT, TextureUsage.SAMPLED)));
             RenderTarget intermediateTarget = device.createRenderTarget(new RenderTargetDescriptor(List.of(intermediate), null));
 

@@ -1,6 +1,5 @@
 package io.github.antonschnfeld.drakon.graphics.vulkan;
 
-import io.github.antonschnfeld.drakon.graphics.backend.GraphicsCapabilities;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
 import io.github.antonschnfeld.drakon.graphics.command.CommandEncoder;
@@ -58,7 +57,6 @@ public final class VulkanDevice implements GraphicsDevice {
     private final VkQueue queue;
     private final long commandPool;
     private final long descriptorPool;
-    private final GraphicsCapabilities capabilities = new GraphicsCapabilities(true, true, true);
     private final VulkanShaderTarget shaderTarget = new VulkanShaderTarget(1, 3, 1, 6);
     private final List<VulkanResource> resources = new ArrayList<>();
     private final IdentityHashMap<BindingLayout, VulkanDescriptorLayout> descriptorLayouts = new IdentityHashMap<>();
@@ -99,7 +97,7 @@ public final class VulkanDevice implements GraphicsDevice {
         this.descriptorPool = descriptorPool;
     }
 
-    /** Creates a headless Vulkan 1.3 device with graphics and compute support. */
+    /** Creates a headless Vulkan 1.3 device with graphics support. */
     static VulkanDevice createHeadless(GraphicsDeviceConfig config) {
         Objects.requireNonNull(config, "config");
         try (MemoryStack stack = stackPush()) {
@@ -157,10 +155,9 @@ public final class VulkanDevice implements GraphicsDevice {
                 LongBuffer pCommandPool = stack.mallocLong(1);
                 check(vkCreateCommandPool(device, commandPoolInfo, null, pCommandPool), "vkCreateCommandPool");
 
-                VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(3, stack);
+                VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
                 sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1024);
                 sizes.get(1).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1024);
-                sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1024);
                 VkDescriptorPoolCreateInfo descriptorPoolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
                         .sType$Default()
                         .flags(VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)
@@ -267,10 +264,9 @@ public final class VulkanDevice implements GraphicsDevice {
             LongBuffer pCommandPool = stack.mallocLong(1);
             check(vkCreateCommandPool(device, commandPoolInfo, null, pCommandPool), "vkCreateCommandPool");
 
-            VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(3, stack);
+            VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
             sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1024);
             sizes.get(1).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1024);
-            sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1024);
             VkDescriptorPoolCreateInfo descriptorPoolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
                     .sType$Default()
                     .flags(VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)
@@ -334,7 +330,7 @@ public final class VulkanDevice implements GraphicsDevice {
                 // Try next device.
             }
         }
-        throw new IllegalStateException("no Vulkan 1.3 device supports graphics+compute+presentation");
+        throw new IllegalStateException("no Vulkan 1.3 device supports graphics and presentation");
     }
 
     private static int pickQueueFamily(VkPhysicalDevice physicalDevice, long surface, MemoryStack stack) {
@@ -345,11 +341,11 @@ public final class VulkanDevice implements GraphicsDevice {
         IntBuffer supported = stack.mallocInt(1);
         for (int i = 0; i < properties.capacity(); i++) {
             int flags = properties.get(i).queueFlags();
-            if ((flags & VK_QUEUE_GRAPHICS_BIT) == 0 || (flags & VK_QUEUE_COMPUTE_BIT) == 0) continue;
+            if ((flags & VK_QUEUE_GRAPHICS_BIT) == 0) continue;
             check(vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, supported), "vkGetPhysicalDeviceSurfaceSupportKHR");
             if (supported.get(0) == VK_TRUE) return i;
         }
-        throw new IllegalStateException("no queue family supports graphics+compute+presentation");
+        throw new IllegalStateException("no queue family supports graphics and presentation");
     }
 
     private static boolean supportsSwapchain(VkPhysicalDevice physicalDevice, MemoryStack stack) {
@@ -387,7 +383,7 @@ public final class VulkanDevice implements GraphicsDevice {
                 }
             }
         }
-        throw new IllegalStateException("no Vulkan 1.3 device with graphics+compute queue available");
+        throw new IllegalStateException("no Vulkan 1.3 device with a graphics queue available");
     }
 
     private static int pickQueueFamily(VkPhysicalDevice physicalDevice, MemoryStack stack) {
@@ -397,9 +393,9 @@ public final class VulkanDevice implements GraphicsDevice {
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, count, properties);
         for (int i = 0; i < properties.capacity(); i++) {
             int flags = properties.get(i).queueFlags();
-            if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0) return i;
+            if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0) return i;
         }
-        throw new IllegalStateException("no queue family supports both graphics and compute");
+        throw new IllegalStateException("no queue family supports graphics");
     }
 
 
@@ -942,6 +938,9 @@ public final class VulkanDevice implements GraphicsDevice {
 
     private static void validateInitialTexture(
             TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+        if (descriptor.format().isDepth()) {
+            throw new IllegalArgumentException("CPU initialization of depth textures is not supported");
+        }
         long required = textureByteCount(descriptor);
         if (initialData.remaining() != required) {
             throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
@@ -950,10 +949,9 @@ public final class VulkanDevice implements GraphicsDevice {
             case COLOR_ATTACHMENT_WRITE -> TextureUsage.COLOR_ATTACHMENT;
             case DEPTH_ATTACHMENT_WRITE -> TextureUsage.DEPTH_ATTACHMENT;
             case SAMPLED_READ -> TextureUsage.SAMPLED;
-            case STORAGE_READ, STORAGE_WRITE -> TextureUsage.STORAGE;
             case COPY_SRC -> TextureUsage.COPY_SRC;
             case COPY_DST -> TextureUsage.COPY_DST;
-            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ, INDIRECT_READ ->
+            case UNDEFINED, UNIFORM_READ, VERTEX_READ, INDEX_READ ->
                     throw new IllegalArgumentException(initialState + " is not a valid initialized texture state");
         };
         if (!descriptor.usage().contains(usage)) {
@@ -965,7 +963,6 @@ public final class VulkanDevice implements GraphicsDevice {
         long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
         int bytesPerTexel = switch (descriptor.format()) {
             case RGBA8_UNORM, BGRA8_UNORM, D32_FLOAT -> 4;
-            case RGBA16_FLOAT -> 8;
         };
         return Math.multiplyExact(texels, bytesPerTexel);
     }
@@ -1047,9 +1044,7 @@ public final class VulkanDevice implements GraphicsDevice {
         Objects.requireNonNull(descriptor, "descriptor");
         requireOpen();
         VulkanShader vertex = owned(descriptor.vertexShader(), VulkanShader.class, "vertex shader");
-        VulkanShader fragment = descriptor.fragmentShader()
-                .map(shader -> owned(shader, VulkanShader.class, "fragment shader"))
-                .orElse(null);
+        VulkanShader fragment = owned(descriptor.fragmentShader(), VulkanShader.class, "fragment shader");
         try (MemoryStack stack = stackPush()) {
             List<VulkanDescriptorLayout> layouts = descriptorLayouts(descriptor.bindingLayouts());
             long pipelineLayout = createPipelineLayout(layouts, stack);
@@ -1062,31 +1057,6 @@ public final class VulkanDevice implements GraphicsDevice {
                 vkDestroyPipelineLayout(device, pipelineLayout, null);
                 throw failure;
             }
-        }
-    }
-
-    @Override
-    public ComputeState createComputeState(ComputeStateDescriptor descriptor) {
-        Objects.requireNonNull(descriptor, "descriptor");
-        requireOpen();
-        VulkanShader shader = owned(descriptor.computeShader(), VulkanShader.class, "compute shader");
-        try (MemoryStack stack = stackPush()) {
-            List<VulkanDescriptorLayout> layouts = descriptorLayouts(descriptor.bindingLayouts());
-            long pipelineLayout = createPipelineLayout(layouts, stack);
-            VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack)
-                    .sType$Default()
-                    .stage(VK_SHADER_STAGE_COMPUTE_BIT)
-                    .module(shader.module)
-                    .pName(stack.UTF8(shader.entryPoint));
-            VkComputePipelineCreateInfo.Buffer pipelineInfo = VkComputePipelineCreateInfo.calloc(1, stack);
-            pipelineInfo.get(0).sType$Default().stage(stage).layout(pipelineLayout);
-            LongBuffer pPipeline = stack.mallocLong(1);
-            int result = vkCreateComputePipelines(device, VK_NULL_HANDLE, pipelineInfo, null, pPipeline);
-            if (result != VK_SUCCESS) {
-                vkDestroyPipelineLayout(device, pipelineLayout, null);
-                check(result, "vkCreateComputePipelines");
-            }
-            return track(new VulkanComputeState(this, pPipeline.get(0), pipelineLayout, descriptor, layouts));
         }
     }
 
@@ -1141,12 +1111,9 @@ public final class VulkanDevice implements GraphicsDevice {
             VulkanShader fragment,
             long pipelineLayout,
             MemoryStack stack) {
-        int stageCount = fragment == null ? 1 : 2;
-        VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(stageCount, stack);
+        VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(2, stack);
         stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vertex.module).pName(stack.UTF8(vertex.entryPoint));
-        if (fragment != null) {
-            stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(fragment.module).pName(stack.UTF8(fragment.entryPoint));
-        }
+        stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(fragment.module).pName(stack.UTF8(fragment.entryPoint));
 
         VertexLayout vertexLayout = descriptor.vertexLayout();
         VkVertexInputBindingDescription.Buffer vertexBindings = VkVertexInputBindingDescription.calloc(vertexLayout.bindings().size(), stack);
@@ -1177,7 +1144,7 @@ public final class VulkanDevice implements GraphicsDevice {
                 .sType$Default().viewportCount(1).scissorCount(1);
         VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack)
                 .sType$Default()
-                .polygonMode(descriptor.rasterState().wireframe() ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL)
+                .polygonMode(VK_POLYGON_MODE_FILL)
                 .cullMode(VulkanMappings.cull(descriptor.rasterState().cullMode()))
                 // The negative-height viewport restores the OpenGL-style Y
                 // orientation. Keep counter-clockwise front faces with it.
@@ -1280,7 +1247,7 @@ public final class VulkanDevice implements GraphicsDevice {
                         imageInfos.add(image);
                         write.pImageInfo(image);
                     }
-                    case UNIFORM_BUFFER, STORAGE_BUFFER -> {
+                    case UNIFORM_BUFFER -> {
                         BufferBinding range = (BufferBinding) value;
                         VulkanBuffer buffer = owned(range.buffer(), VulkanBuffer.class, "bound buffer");
                         VkDescriptorBufferInfo.Buffer bufferInfo = VkDescriptorBufferInfo.calloc(1, stack);
@@ -1414,7 +1381,6 @@ public final class VulkanDevice implements GraphicsDevice {
         }
     }
 
-    @Override public GraphicsCapabilities capabilities() { requireOpen(); return capabilities; }
     public String backendName() { requireOpen(); return "LWJGL Vulkan 1.3 spike"; }
 
     void destroyBuffer(long buffer, long memory) {

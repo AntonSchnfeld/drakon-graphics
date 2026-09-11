@@ -12,7 +12,6 @@ final class VulkanMappings {
         return switch (format) {
             case RGBA8_UNORM -> VK_FORMAT_R8G8B8A8_UNORM;
             case BGRA8_UNORM -> VK_FORMAT_B8G8R8A8_UNORM;
-            case RGBA16_FLOAT -> VK_FORMAT_R16G16B16A16_SFLOAT;
             case D32_FLOAT -> VK_FORMAT_D32_SFLOAT;
         };
     }
@@ -79,7 +78,6 @@ final class VulkanMappings {
         return switch (stage) {
             case VERTEX -> VK_SHADER_STAGE_VERTEX_BIT;
             case FRAGMENT -> VK_SHADER_STAGE_FRAGMENT_BIT;
-            case COMPUTE -> VK_SHADER_STAGE_COMPUTE_BIT;
         };
     }
 
@@ -93,7 +91,6 @@ final class VulkanMappings {
         return switch (type) {
             case SAMPLED_TEXTURE -> VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             case UNIFORM_BUFFER -> VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            case STORAGE_BUFFER -> VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         };
     }
 
@@ -104,10 +101,6 @@ final class VulkanMappings {
                 case VERTEX -> VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
                 case INDEX -> VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
                 case UNIFORM -> VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-                case STORAGE -> VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-                case INDIRECT -> VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-                case COPY_SRC -> VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-                case COPY_DST -> VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             };
         }
         return flags;
@@ -120,7 +113,6 @@ final class VulkanMappings {
                 case COLOR_ATTACHMENT -> VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
                 case DEPTH_ATTACHMENT -> VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
                 case SAMPLED -> VK_IMAGE_USAGE_SAMPLED_BIT;
-                case STORAGE -> VK_IMAGE_USAGE_STORAGE_BIT;
                 case COPY_SRC -> VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
                 case COPY_DST -> VK_IMAGE_USAGE_TRANSFER_DST_BIT;
             };
@@ -138,7 +130,6 @@ final class VulkanMappings {
             case COLOR_ATTACHMENT_WRITE -> VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             case DEPTH_ATTACHMENT_WRITE -> VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
             case SAMPLED_READ -> VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            case STORAGE_READ, STORAGE_WRITE -> VK_IMAGE_LAYOUT_GENERAL;
             case COPY_SRC -> VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             case COPY_DST -> VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             default -> throw new IllegalArgumentException(state + " is not a texture state");
@@ -158,9 +149,8 @@ final class VulkanMappings {
             case DEPTH_ATTACHMENT_WRITE -> VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
             case VERTEX_READ -> VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT;
             case INDEX_READ -> VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
-            case INDIRECT_READ -> VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
             case COPY_SRC, COPY_DST -> VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            case SAMPLED_READ, UNIFORM_READ, STORAGE_READ, STORAGE_WRITE -> VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            case SAMPLED_READ, UNIFORM_READ -> VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         };
     }
 
@@ -173,9 +163,6 @@ final class VulkanMappings {
             case UNIFORM_READ -> VK_ACCESS_2_UNIFORM_READ_BIT;
             case VERTEX_READ -> VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
             case INDEX_READ -> VK_ACCESS_2_INDEX_READ_BIT;
-            case STORAGE_READ -> VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-            case STORAGE_WRITE -> VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-            case INDIRECT_READ -> VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
             case COPY_SRC -> VK_ACCESS_2_TRANSFER_READ_BIT;
             case COPY_DST -> VK_ACCESS_2_TRANSFER_WRITE_BIT;
         };

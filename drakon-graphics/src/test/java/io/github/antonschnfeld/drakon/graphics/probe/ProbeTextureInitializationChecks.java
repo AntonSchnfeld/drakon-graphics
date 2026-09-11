@@ -34,6 +34,10 @@ public final class ProbeTextureInitializationChecks {
         expect(IllegalArgumentException.class, () -> device.createTexture(sampled, data, ResourceState.UNDEFINED));
         expect(IllegalArgumentException.class, () -> device.createTexture(sampled, data, ResourceState.VERTEX_READ));
         expect(IllegalArgumentException.class, () -> device.createTexture(sampled, data, ResourceState.COLOR_ATTACHMENT_WRITE));
+        TextureDescriptor depth = new TextureDescriptor(2, 2, TextureFormat.D32_FLOAT,
+                Set.of(TextureUsage.DEPTH_ATTACHMENT));
+        expect(IllegalArgumentException.class, () -> device.createTexture(
+                depth, ByteBuffer.allocate(16), ResourceState.DEPTH_ATTACHMENT_WRITE));
 
         Texture initialized = device.createTexture(sampled, data, ResourceState.SAMPLED_READ);
         if (device.textureState(initialized) != ResourceState.SAMPLED_READ) {

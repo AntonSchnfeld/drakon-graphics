@@ -49,12 +49,6 @@ public final class BindingSetDescriptor {
                     throw new IllegalArgumentException("buffer for binding " + binding.name() + " lacks UNIFORM usage");
                 }
             }
-            case STORAGE_BUFFER -> {
-                BufferBinding buffer = (BufferBinding) value;
-                if (!buffer.buffer().usage().contains(BufferUsage.STORAGE)) {
-                    throw new IllegalArgumentException("buffer for binding " + binding.name() + " lacks STORAGE usage");
-                }
-            }
         }
     }
 
