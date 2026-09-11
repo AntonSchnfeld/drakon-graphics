@@ -17,9 +17,16 @@ final class VulkanPresentationTarget extends VulkanTarget {
 
     @Override long colorView(int index) { return device.presentationColorView(index); }
     @Override long depthView() { return 0L; }
-    @Override void validateWritableStates() { /* backing image is backend-owned */ }
-    @Override void prepareForRendering(VkCommandBuffer commandBuffer) { device.preparePresentationImage(commandBuffer); }
-    @Override void finishRendering(VkCommandBuffer commandBuffer) { device.finishPresentationImage(commandBuffer); }
+    @Override void validateWritableStates(VulkanRecordingState states) { /* backing image is backend-owned */ }
+    @Override
+    VulkanPresentationState prepareForRendering(
+            VkCommandBuffer commandBuffer, VulkanPresentationState presentationState) {
+        return device.preparePresentationImage(commandBuffer, this, presentationState);
+    }
+    @Override
+    void finishRendering(VkCommandBuffer commandBuffer, VulkanPresentationState presentationState) {
+        device.finishPresentationImage(commandBuffer, presentationState);
+    }
     @Override boolean presentable() { return true; }
     @Override public int width() { requireAlive(); return device.presentationWidth(); }
     @Override public int height() { requireAlive(); return device.presentationHeight(); }

@@ -213,8 +213,20 @@ final class ProbeCommandEncoder implements CommandEncoder {
         open();
         if (activeRendering != null) throw new IllegalStateException("rendering scope still open");
         finished = true;
-        return new ProbeCommandList(owner, List.copyOf(ops));
+        ProbeCommandList result = new ProbeCommandList(owner, List.copyOf(ops));
+        ops.clear();
+        owner.commandListCreated(result);
+        return result;
     }
+
+    @Override public void close() {
+        if (finished) return;
+        finished = true;
+        activeRendering = null;
+        ops.clear();
+    }
+
+    boolean terminal() { return finished; }
 
     private void requireGraphicsDraw(boolean indexed) {
         if (activeRendering == null) throw new IllegalStateException("draw outside rendering");

@@ -425,6 +425,15 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         requireRecording();
         if (rendering) throw new IllegalStateException("cannot finish while rendering scope is active");
         finished = true;
-        return new OpenGLCommandList(device, commands);
+        OpenGLCommandList result = new OpenGLCommandList(device, commands);
+        commands.clear();
+        return result;
+    }
+
+    @Override
+    public void close() {
+        if (finished) return;
+        finished = true;
+        commands.clear();
     }
 }

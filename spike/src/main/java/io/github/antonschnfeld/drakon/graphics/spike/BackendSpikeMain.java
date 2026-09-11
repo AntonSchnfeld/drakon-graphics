@@ -3,6 +3,8 @@ package io.github.antonschnfeld.drakon.graphics.spike;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
 import io.github.antonschnfeld.drakon.graphics.command.Color;
 import io.github.antonschnfeld.drakon.graphics.command.ColorAttachmentOps;
+import io.github.antonschnfeld.drakon.graphics.command.CommandEncoder;
+import io.github.antonschnfeld.drakon.graphics.command.CommandList;
 import io.github.antonschnfeld.drakon.graphics.command.RenderingInfo;
 import io.github.antonschnfeld.drakon.graphics.opengl.OpenGLBackend;
 import io.github.antonschnfeld.drakon.graphics.opengl.OpenGLDevice;
@@ -158,6 +160,7 @@ public final class BackendSpikeMain {
                                 ShaderStage.FRAGMENT, "main",
                                 new SpirvShaderCode(compileSpirv(VULKAN_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
                         TexturedMesh mesh = createTexturedMesh(device, device.defaultRenderTarget(), vertex, fragment)) {
+                    runVulkanLifetimeStress(device, device.defaultRenderTarget(), vertex, fragment);
                     runWindowLoop(device, device.defaultRenderTarget(), mesh, device::shouldClose, device::pollEvents);
                 }
             }
@@ -303,6 +306,45 @@ public final class BackendSpikeMain {
             device.present(target);
             pollEvents.run();
         }
+    }
+
+    private static void runVulkanLifetimeStress(
+            GraphicsDevice device,
+            RenderTarget target,
+            Shader vertex,
+            Shader fragment) {
+        CommandEncoder abandonedEncoder = device.createCommandEncoder();
+        abandonedEncoder.close();
+        abandonedEncoder.close();
+
+        CommandEncoder finishedEncoder = device.createCommandEncoder();
+        CommandList abandonedList = finishedEncoder.finish();
+        finishedEncoder.close();
+        abandonedList.close();
+        abandonedList.close();
+
+        Renderer renderer = new Renderer(device);
+        try (TexturedMesh transientMesh = createTexturedMesh(device, target, vertex, fragment)) {
+            renderer.execute(RenderPipeline.of(commands -> {
+                commands.transition(transientMesh.vertexBuffer(), ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
+                commands.transition(transientMesh.indexBuffer(), ResourceState.UNDEFINED, ResourceState.INDEX_READ);
+            }));
+            renderer.execute(RenderPipeline.of(commands -> {
+                commands.beginRendering(RenderingInfo.builder(target)
+                        .color(ColorAttachmentOps.clear(new Color(0.02f, 0.02f, 0.02f, 1.0f)))
+                        .build());
+                commands.setGraphicsState(transientMesh.state());
+                commands.setVertexBuffer(0, transientMesh.vertexBuffer(), 0);
+                commands.setIndexBuffer(transientMesh.indexBuffer(), IndexType.UINT16, 0);
+                commands.bindSet(0, transientMesh.bindingSet());
+                commands.drawIndexed(6, 1, 0, 0, 0);
+                commands.endRendering();
+            }));
+        }
+        // The presentation submission above is not fenced until present(). The
+        // transient resources are already logically closed here, so Vulkan must
+        // retain their native objects until this frame eventually retires.
+        device.present(target);
     }
 
     private static ByteBuffer quadVertices() {

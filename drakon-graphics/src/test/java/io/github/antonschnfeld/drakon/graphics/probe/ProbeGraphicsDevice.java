@@ -29,6 +29,8 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
      */
     private final Map<Texture, ResourceState> textureStates = new IdentityHashMap<>();
     private final Map<Buffer, ResourceState> bufferStates = new IdentityHashMap<>();
+    private ProbeCommandEncoder lastEncoder;
+    private ProbeCommandList lastCommandList;
     private boolean closed;
 
     ProbeGraphicsDevice(String backendName, boolean validation, ShaderTarget shaderTarget) {
@@ -56,6 +58,10 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
     static long debugId(GpuResource resource) {
         return ((ProbeResources.Resource) resource).debugId();
     }
+
+    ProbeCommandEncoder lastEncoder() { return lastEncoder; }
+    ProbeCommandList lastCommandList() { return lastCommandList; }
+    void commandListCreated(ProbeCommandList list) { lastCommandList = list; }
 
     @Override public Buffer createBuffer(BufferDescriptor descriptor) {
         ensureOpen();
@@ -211,7 +217,8 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
 
     @Override public CommandEncoder createCommandEncoder() {
         ensureOpen();
-        return new ProbeCommandEncoder(this, backendName, validation, textureStates, bufferStates);
+        lastEncoder = new ProbeCommandEncoder(this, backendName, validation, textureStates, bufferStates);
+        return lastEncoder;
     }
 
     @Override public void submit(CommandList commandList) {
@@ -220,9 +227,14 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         if (!(commandList instanceof ProbeCommandList list) || list.owner() != this) {
             throw new IllegalArgumentException("foreign command list");
         }
-        if (list.submitted()) throw new IllegalArgumentException("command list already submitted");
-        if (validation && list.operations().isEmpty()) throw new IllegalStateException("empty command list");
-        list.markSubmitted();
+        list.beginSubmission();
+        try {
+            if (validation && list.operations().isEmpty()) throw new IllegalStateException("empty command list");
+            list.markSubmitted();
+        } catch (RuntimeException | Error failure) {
+            list.markFailed();
+            throw failure;
+        }
     }
 
     @Override public void close() {

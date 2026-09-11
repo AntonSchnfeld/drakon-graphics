@@ -553,13 +553,19 @@ public final class OpenGLDevice implements GraphicsDevice {
         if (!(commandList instanceof OpenGLCommandList list) || list.device != this) {
             throw new IllegalArgumentException("command list belongs to another backend/device");
         }
-        list.markSubmitted();
-        makeCurrent();
-        OpenGLExecutionContext context = new OpenGLExecutionContext(this);
-        for (OpenGLCommand command : list.commands) {
-            command.execute(context);
+        list.beginSubmission();
+        try {
+            makeCurrent();
+            OpenGLExecutionContext context = new OpenGLExecutionContext(this);
+            for (OpenGLCommand command : list.commands) {
+                command.execute(context);
+            }
+            glFlush();
+            list.markSubmitted();
+        } catch (RuntimeException | Error failure) {
+            list.markFailed();
+            throw failure;
         }
-        glFlush();
     }
 
     public String backendName() { requireOpen(); return "LWJGL OpenGL 4.3"; }

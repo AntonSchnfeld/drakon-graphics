@@ -74,7 +74,11 @@ public final class VulkanDevice implements GraphicsDevice {
     private FrameSync[] frames = new FrameSync[0];
     private int frameSlot;
     private int imageIndex = -1;
+    private long acquisitionSerial;
+    private long currentAcquisition;
     private boolean imageAcquired;
+    private final ArrayList<VkCommandBuffer> deferredCommandBuffers = new ArrayList<>();
+    private final ArrayList<VulkanResource> deferredResources = new ArrayList<>();
     private boolean glfwOwned;
     private boolean closed;
 
@@ -442,13 +446,25 @@ public final class VulkanDevice implements GraphicsDevice {
      * never exposes this image as a Texture, which is why this transition is
      * intentionally backend-managed rather than expressed through ResourceState.
      */
-    void preparePresentationImage(VkCommandBuffer commandBuffer) {
+    VulkanPresentationState preparePresentationImage(
+            VkCommandBuffer commandBuffer,
+            VulkanPresentationTarget target,
+            VulkanPresentationState recordingState) {
         requireOpen();
         ensurePresentationAcquired();
+        VulkanPresentationState state = recordingState;
+        if (state == null) {
+            state = new VulkanPresentationState(
+                    target, currentAcquisition, imageIndex, swapchainInitialized[imageIndex]);
+        } else if (state.target != target
+                || state.acquisition != currentAcquisition
+                || state.imageIndex != imageIndex) {
+            throw new IllegalStateException("presentation acquisition changed while recording command list");
+        }
         try (MemoryStack stack = stackPush()) {
-            int oldLayout = swapchainInitialized[imageIndex]
+            int oldLayout = state.recordingInitialized()
                     ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED;
-            long srcStage = swapchainInitialized[imageIndex]
+            long srcStage = state.recordingInitialized()
                     ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
             long srcAccess = 0L;
             VkImageMemoryBarrier2.Buffer barrier = VkImageMemoryBarrier2.calloc(1, stack);
@@ -469,11 +485,17 @@ public final class VulkanDevice implements GraphicsDevice {
                     .sType$Default().pImageMemoryBarriers(barrier);
             vkCmdPipelineBarrier2(commandBuffer, dependency);
         }
+        return state;
     }
 
-    void finishPresentationImage(VkCommandBuffer commandBuffer) {
+    void finishPresentationImage(VkCommandBuffer commandBuffer, VulkanPresentationState state) {
         requireOpen();
         if (!imageAcquired) throw new IllegalStateException("no swapchain image is acquired");
+        if (state == null
+                || state.acquisition != currentAcquisition
+                || state.imageIndex != imageIndex) {
+            throw new IllegalStateException("presentation acquisition changed while recording command list");
+        }
         try (MemoryStack stack = stackPush()) {
             VkImageMemoryBarrier2.Buffer barrier = VkImageMemoryBarrier2.calloc(1, stack);
             barrier.get(0)
@@ -493,7 +515,7 @@ public final class VulkanDevice implements GraphicsDevice {
                     .sType$Default().pImageMemoryBarriers(barrier);
             vkCmdPipelineBarrier2(commandBuffer, dependency);
         }
-        swapchainInitialized[imageIndex] = true;
+        state.markInitialized();
     }
 
     private void ensurePresentationAcquired() {
@@ -512,6 +534,7 @@ public final class VulkanDevice implements GraphicsDevice {
                 }
                 if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) check(result, "vkAcquireNextImageKHR");
                 imageIndex = pImage.get(0);
+                currentAcquisition = ++acquisitionSerial;
                 imageAcquired = true;
                 return;
             }
@@ -522,14 +545,13 @@ public final class VulkanDevice implements GraphicsDevice {
         if (!frame.inFlight) return;
         try (MemoryStack stack = stackPush()) {
             check(vkWaitForFences(device, stack.longs(frame.fence), true, Long.MAX_VALUE), "vkWaitForFences");
-            if (!frame.commandBuffers.isEmpty()) {
-                PointerBuffer buffers = stack.mallocPointer(frame.commandBuffers.size());
-                for (VkCommandBuffer commandBuffer : frame.commandBuffers) buffers.put(commandBuffer.address());
-                buffers.flip();
-                vkFreeCommandBuffers(device, commandPool, buffers);
-                frame.commandBuffers.clear();
-            }
         }
+        reclaimFrame(frame);
+    }
+
+    private void reclaimFrame(FrameSync frame) {
+        freeCommandBuffers(frame.commandBuffers);
+        releaseResources(frame.resources);
         frame.inFlight = false;
         frame.presentationSubmitted = false;
     }
@@ -647,8 +669,11 @@ public final class VulkanDevice implements GraphicsDevice {
 
     private void recreateSwapchain() {
         check(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(recreate swapchain)");
+        for (FrameSync frame : frames) if (frame != null) reclaimFrame(frame);
+        reclaimDeferredSubmissions();
         imageAcquired = false;
         imageIndex = -1;
+        currentAcquisition = 0L;
         long old = swapchain;
         createSwapchain(old);
         if (presentationTarget != null && !presentationTarget.colorFormats().equals(List.of(swapchainFormat))) {
@@ -1213,6 +1238,7 @@ public final class VulkanDevice implements GraphicsDevice {
         Objects.requireNonNull(descriptor, "descriptor");
         requireOpen();
         VulkanDescriptorLayout layout = descriptorLayouts(List.of(descriptor.layout())).get(0);
+        long descriptorSet = 0L;
         try (MemoryStack stack = stackPush()) {
             VkDescriptorSetAllocateInfo allocate = VkDescriptorSetAllocateInfo.calloc(stack)
                     .sType$Default()
@@ -1220,16 +1246,17 @@ public final class VulkanDevice implements GraphicsDevice {
                     .pSetLayouts(stack.longs(layout.handle));
             LongBuffer pSet = stack.mallocLong(1);
             check(vkAllocateDescriptorSets(device, allocate, pSet), "vkAllocateDescriptorSets");
-            long set = pSet.get(0);
+            descriptorSet = pSet.get(0);
 
             VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(descriptor.layout().bindings().size(), stack);
             List<VkDescriptorImageInfo.Buffer> imageInfos = new ArrayList<>();
             List<VkDescriptorBufferInfo.Buffer> bufferInfos = new ArrayList<>();
+            List<VulkanResource> dependencies = new ArrayList<>();
             for (int i = 0; i < descriptor.layout().bindings().size(); i++) {
                 Binding<?> binding = descriptor.layout().bindings().get(i);
                 VkWriteDescriptorSet write = writes.get(i)
                         .sType$Default()
-                        .dstSet(set)
+                        .dstSet(descriptorSet)
                         .dstBinding(binding.binding())
                         .descriptorCount(1)
                         .descriptorType(VulkanMappings.descriptorType(binding.type()));
@@ -1239,6 +1266,8 @@ public final class VulkanDevice implements GraphicsDevice {
                         TextureBinding sampled = (TextureBinding) value;
                         VulkanTexture texture = owned(sampled.texture(), VulkanTexture.class, "sampled texture");
                         VulkanSampler sampler = owned(sampled.sampler(), VulkanSampler.class, "sampler");
+                        dependencies.add(texture);
+                        dependencies.add(sampler);
                         VkDescriptorImageInfo.Buffer image = VkDescriptorImageInfo.calloc(1, stack);
                         image.get(0)
                                 .sampler(sampler.handle)
@@ -1250,6 +1279,7 @@ public final class VulkanDevice implements GraphicsDevice {
                     case UNIFORM_BUFFER -> {
                         BufferBinding range = (BufferBinding) value;
                         VulkanBuffer buffer = owned(range.buffer(), VulkanBuffer.class, "bound buffer");
+                        dependencies.add(buffer);
                         VkDescriptorBufferInfo.Buffer bufferInfo = VkDescriptorBufferInfo.calloc(1, stack);
                         bufferInfo.get(0).buffer(buffer.handle).offset(range.offset()).range(range.size());
                         bufferInfos.add(bufferInfo);
@@ -1258,7 +1288,10 @@ public final class VulkanDevice implements GraphicsDevice {
                 }
             }
             vkUpdateDescriptorSets(device, writes, null);
-            return track(new VulkanBindingSet(this, set, descriptor));
+            return track(new VulkanBindingSet(this, descriptorSet, descriptor, dependencies));
+        } catch (RuntimeException | Error failure) {
+            if (descriptorSet != 0L) destroyDescriptorSet(descriptorSet);
+            throw failure;
         }
     }
 
@@ -1309,6 +1342,7 @@ public final class VulkanDevice implements GraphicsDevice {
             int result = vkQueuePresentKHR(queue, info);
             imageAcquired = false;
             imageIndex = -1;
+            currentAcquisition = 0L;
             frameSlot = (frameSlot + 1) % frames.length;
             if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
                 recreateSwapchain();
@@ -1330,33 +1364,56 @@ public final class VulkanDevice implements GraphicsDevice {
             PointerBuffer pCommandBuffer = stack.mallocPointer(1);
             check(vkAllocateCommandBuffers(device, allocate, pCommandBuffer), "vkAllocateCommandBuffers");
             VkCommandBuffer commandBuffer = new VkCommandBuffer(pCommandBuffer.get(0), device);
-            VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
-                    .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-            check(vkBeginCommandBuffer(commandBuffer, begin), "vkBeginCommandBuffer");
-            return new VulkanCommandEncoder(this, commandBuffer);
+            try {
+                VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
+                        .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+                check(vkBeginCommandBuffer(commandBuffer, begin), "vkBeginCommandBuffer");
+                return new VulkanCommandEncoder(this, commandBuffer);
+            } catch (RuntimeException | Error failure) {
+                freeCommandBuffer(commandBuffer);
+                throw failure;
+            }
         }
     }
 
     @Override
-    public void submit(CommandList commandList) {
+    public synchronized void submit(CommandList commandList) {
         requireOpen();
         if (!(commandList instanceof VulkanCommandList list) || list.device != this) {
             throw new IllegalArgumentException("command list belongs to another backend/device");
         }
-        list.markSubmitted();
+        list.requireReady();
+        try {
+            list.commandState.validateCommittedStates();
+            validatePresentationState(list.presentationState);
+        } catch (RuntimeException | Error failure) {
+            list.failAndRelease();
+            throw failure;
+        }
+
+        List<VulkanResource> retained = new ArrayList<>(list.resources.size());
+        try {
+            for (VulkanResource resource : list.resources) {
+                resource.retainForSubmission();
+                retained.add(resource);
+            }
+            list.beginSubmission();
+        } catch (RuntimeException | Error failure) {
+            releaseResources(retained);
+            list.failAndRelease();
+            throw failure;
+        }
+
+        boolean nativeSubmitted = false;
         try (MemoryStack stack = stackPush()) {
             VkSubmitInfo submit = VkSubmitInfo.calloc(stack)
                     .sType$Default()
                     .pCommandBuffers(stack.pointers(list.commandBuffer.address()));
 
-            if (list.presentationTarget != null) {
-                if (list.presentationTarget != presentationTarget || !imageAcquired) {
-                    throw new IllegalStateException("presentation command list has no matching acquired swapchain image");
-                }
+            if (list.presentationState != null) {
                 FrameSync frame = frames[frameSlot];
-                if (frame.inFlight) {
-                    throw new IllegalStateException("current presentation frame slot has already been presented");
-                }
+                frame.commandBuffers.ensureCapacity(frame.commandBuffers.size() + 1);
+                frame.resources.ensureCapacity(frame.resources.size() + retained.size());
                 // Only the first submission that touches an acquired swapchain
                 // image waits on vkAcquireNextImageKHR. Later submissions are
                 // naturally ordered on this single graphics queue. present()
@@ -1366,18 +1423,67 @@ public final class VulkanDevice implements GraphicsDevice {
                             .pWaitSemaphores(stack.longs(frame.imageAvailable))
                             .pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT));
                 }
-                check(vkQueueSubmit(queue, submit, VK_NULL_HANDLE), "vkQueueSubmit(presentation)");
+                int result = vkQueueSubmit(queue, submit, VK_NULL_HANDLE);
+                if (result != VK_SUCCESS) check(result, "vkQueueSubmit(presentation)");
+                nativeSubmitted = true;
+                commitSubmittedState(list);
+                list.markSubmitted();
                 frame.presentationSubmitted = true;
                 frame.commandBuffers.add(list.commandBuffer);
+                frame.resources.addAll(retained);
             } else {
+                deferredCommandBuffers.ensureCapacity(deferredCommandBuffers.size() + 1);
+                deferredResources.ensureCapacity(deferredResources.size() + retained.size());
                 // Offscreen submissions remain synchronous in this spike so
                 // command-buffer/resource lifetime stays simple while the RHI
                 // mapping is evaluated. Presentation deliberately does not use
                 // this shortcut and keeps two frames in flight.
-                check(vkQueueSubmit(queue, submit, VK_NULL_HANDLE), "vkQueueSubmit");
-                check(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
-                vkFreeCommandBuffers(device, commandPool, list.commandBuffer);
+                int result = vkQueueSubmit(queue, submit, VK_NULL_HANDLE);
+                if (result != VK_SUCCESS) check(result, "vkQueueSubmit");
+                nativeSubmitted = true;
+                commitSubmittedState(list);
+                list.markSubmitted();
+                int waitResult = vkQueueWaitIdle(queue);
+                if (waitResult != VK_SUCCESS) {
+                    deferredCommandBuffers.add(list.commandBuffer);
+                    deferredResources.addAll(retained);
+                    check(waitResult, "vkQueueWaitIdle");
+                }
+                freeCommandBuffer(list.commandBuffer);
+                releaseResources(retained);
             }
+        } catch (RuntimeException | Error failure) {
+            if (!nativeSubmitted) {
+                list.failAndRelease();
+                releaseResources(retained);
+            }
+            throw failure;
+        }
+    }
+
+    private void validatePresentationState(VulkanPresentationState state) {
+        if (state == null) return;
+        if (state.target != presentationTarget
+                || !imageAcquired
+                || state.acquisition != currentAcquisition
+                || state.imageIndex != imageIndex) {
+            throw new IllegalStateException("presentation command list has no matching acquired swapchain image");
+        }
+        if (frames[frameSlot].inFlight) {
+            throw new IllegalStateException("current presentation frame slot has already been presented");
+        }
+        if (swapchainInitialized[state.imageIndex] != state.expectedInitialized) {
+            throw new IllegalStateException("presentation image state changed since command-list recording");
+        }
+    }
+
+    private void commitSubmittedState(VulkanCommandList list) {
+        // This single graphics queue orders later submissions after earlier ones,
+        // so committed logical state advances when the queue accepts the work;
+        // waiting for GPU completion would make subsequent recording stale.
+        list.commandState.commitFinalStates();
+        if (list.presentationState != null && list.presentationState.recordingInitialized()) {
+            swapchainInitialized[list.presentationState.imageIndex] = true;
         }
     }
 
@@ -1396,9 +1502,43 @@ public final class VulkanDevice implements GraphicsDevice {
 
     void destroyShaderModule(long module) { vkDestroyShaderModule(device, module, null); }
     void destroySampler(long sampler) { vkDestroySampler(device, sampler, null); }
+    void destroyDescriptorSet(long descriptorSet) {
+        try (MemoryStack stack = stackPush()) {
+            check(vkFreeDescriptorSets(device, descriptorPool, stack.longs(descriptorSet)), "vkFreeDescriptorSets");
+        }
+    }
     void destroyPipeline(long pipeline, long pipelineLayout) {
         vkDestroyPipeline(device, pipeline, null);
         vkDestroyPipelineLayout(device, pipelineLayout, null);
+    }
+
+    void freeCommandBuffer(VkCommandBuffer commandBuffer) {
+        vkFreeCommandBuffers(device, commandPool, commandBuffer);
+    }
+
+    void freeCommandBufferIfOpen(VkCommandBuffer commandBuffer) {
+        if (!closed) freeCommandBuffer(commandBuffer);
+    }
+
+    private void freeCommandBuffers(List<VkCommandBuffer> commandBuffers) {
+        if (commandBuffers.isEmpty()) return;
+        try (MemoryStack stack = stackPush()) {
+            PointerBuffer buffers = stack.mallocPointer(commandBuffers.size());
+            for (VkCommandBuffer commandBuffer : commandBuffers) buffers.put(commandBuffer.address());
+            buffers.flip();
+            vkFreeCommandBuffers(device, commandPool, buffers);
+        }
+        commandBuffers.clear();
+    }
+
+    private static void releaseResources(List<VulkanResource> retained) {
+        for (int i = retained.size() - 1; i >= 0; i--) retained.get(i).releaseFromSubmission();
+        retained.clear();
+    }
+
+    private void reclaimDeferredSubmissions() {
+        freeCommandBuffers(deferredCommandBuffers);
+        releaseResources(deferredResources);
     }
 
     @Override
@@ -1407,19 +1547,11 @@ public final class VulkanDevice implements GraphicsDevice {
         vkDeviceWaitIdle(device);
         for (FrameSync frame : frames) {
             if (frame == null) continue;
-            if (!frame.commandBuffers.isEmpty()) {
-                try (MemoryStack stack = stackPush()) {
-                    PointerBuffer buffers = stack.mallocPointer(frame.commandBuffers.size());
-                    for (VkCommandBuffer commandBuffer : frame.commandBuffers) buffers.put(commandBuffer.address());
-                    buffers.flip();
-                    vkFreeCommandBuffers(device, commandPool, buffers);
-                }
-                frame.commandBuffers.clear();
-            }
+            reclaimFrame(frame);
         }
+        reclaimDeferredSubmissions();
         for (int i = resources.size() - 1; i >= 0; i--) {
-            VulkanResource resource = resources.get(i);
-            if (!resource.isClosed()) resource.close();
+            resources.get(i).destroyForDeviceClose();
         }
         for (Map.Entry<BindingLayout, VulkanDescriptorLayout> entry : descriptorLayouts.entrySet()) {
             vkDestroyDescriptorSetLayout(device, entry.getValue().handle, null);
@@ -1451,7 +1583,8 @@ public final class VulkanDevice implements GraphicsDevice {
         final long imageAvailable;
         final long renderFinished;
         final long fence;
-        final List<VkCommandBuffer> commandBuffers = new ArrayList<>();
+        final ArrayList<VkCommandBuffer> commandBuffers = new ArrayList<>();
+        final ArrayList<VulkanResource> resources = new ArrayList<>();
         boolean inFlight;
         boolean presentationSubmitted;
 

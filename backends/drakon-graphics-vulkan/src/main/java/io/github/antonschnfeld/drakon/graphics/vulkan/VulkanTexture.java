@@ -8,7 +8,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.TextureUsage;
 
 import java.util.Set;
 
-final class VulkanTexture extends VulkanResource implements Texture {
+final class VulkanTexture extends VulkanResource implements Texture, VulkanStateResource {
     final long image;
     final long memory;
     final long view;
@@ -27,5 +27,7 @@ final class VulkanTexture extends VulkanResource implements Texture {
     @Override public int height() { requireAlive(); return descriptor.height(); }
     @Override public TextureFormat format() { requireAlive(); return descriptor.format(); }
     @Override public Set<TextureUsage> usage() { requireAlive(); return descriptor.usage(); }
+    @Override public ResourceState committedState() { return state; }
+    @Override public void commitState(ResourceState state) { this.state = state; }
     @Override void deleteNative() { device.destroyTexture(image, view, memory); }
 }

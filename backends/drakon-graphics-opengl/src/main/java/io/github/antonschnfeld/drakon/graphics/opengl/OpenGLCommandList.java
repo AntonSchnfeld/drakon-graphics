@@ -6,18 +6,45 @@ import java.util.List;
 
 final class OpenGLCommandList implements CommandList {
     final OpenGLDevice device;
-    final List<OpenGLCommand> commands;
-    private boolean submitted;
+    List<OpenGLCommand> commands;
+    private Status status = Status.READY;
 
     OpenGLCommandList(OpenGLDevice device, List<OpenGLCommand> commands) {
         this.device = device;
         this.commands = List.copyOf(commands);
     }
 
-    void markSubmitted() {
-        if (submitted) {
-            throw new IllegalStateException("command list is single-submit");
+    synchronized void beginSubmission() {
+        if (status != Status.READY) throw new IllegalStateException("command list is single-submit");
+        status = Status.SUBMITTING;
+    }
+
+    synchronized void markSubmitted() {
+        if (status != Status.SUBMITTING) throw new IllegalStateException("command list is not submitting");
+        status = Status.SUBMITTED;
+        commands = List.of();
+    }
+
+    synchronized void markFailed() {
+        if (status == Status.SUBMITTING) {
+            status = Status.FAILED;
+            commands = List.of();
         }
-        submitted = true;
+    }
+
+    @Override
+    public synchronized void close() {
+        if (status == Status.READY) {
+            status = Status.CLOSED;
+            commands = List.of();
+        }
+    }
+
+    private enum Status {
+        READY,
+        SUBMITTING,
+        SUBMITTED,
+        FAILED,
+        CLOSED
     }
 }

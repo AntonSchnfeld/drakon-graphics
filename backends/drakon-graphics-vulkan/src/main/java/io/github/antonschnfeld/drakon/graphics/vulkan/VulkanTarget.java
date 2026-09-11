@@ -8,13 +8,16 @@ abstract class VulkanTarget extends VulkanResource implements RenderTarget {
 
     abstract long colorView(int index);
     abstract long depthView();
-    abstract void validateWritableStates();
+    abstract void validateWritableStates(VulkanRecordingState states);
 
     /** Gives presentation targets a chance to acquire/transition their backing image. */
-    void prepareForRendering(VkCommandBuffer commandBuffer) {}
+    VulkanPresentationState prepareForRendering(
+            VkCommandBuffer commandBuffer, VulkanPresentationState presentationState) {
+        return presentationState;
+    }
 
     /** Gives presentation targets a chance to transition their backing image for presentation. */
-    void finishRendering(VkCommandBuffer commandBuffer) {}
+    void finishRendering(VkCommandBuffer commandBuffer, VulkanPresentationState presentationState) {}
 
     boolean presentable() { return false; }
 }

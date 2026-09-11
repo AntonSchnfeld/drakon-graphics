@@ -7,7 +7,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
 
 import java.util.Set;
 
-final class VulkanBuffer extends VulkanResource implements Buffer {
+final class VulkanBuffer extends VulkanResource implements Buffer, VulkanStateResource {
     final long handle;
     final long memory;
     private final BufferDescriptor descriptor;
@@ -22,5 +22,7 @@ final class VulkanBuffer extends VulkanResource implements Buffer {
 
     @Override public long size() { requireAlive(); return descriptor.size(); }
     @Override public Set<BufferUsage> usage() { requireAlive(); return descriptor.usage(); }
+    @Override public ResourceState committedState() { return state; }
+    @Override public void commitState(ResourceState state) { this.state = state; }
     @Override void deleteNative() { device.destroyBuffer(handle, memory); }
 }

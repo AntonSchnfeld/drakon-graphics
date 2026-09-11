@@ -28,15 +28,23 @@ final class VulkanRenderTarget extends VulkanTarget {
     @Override long depthView() { return depth == null ? 0L : depth.view; }
 
     @Override
-    void validateWritableStates() {
+    void validateWritableStates(VulkanRecordingState states) {
         for (VulkanTexture color : colors) {
-            if (color.state != ResourceState.COLOR_ATTACHMENT_WRITE) {
+            if (states.effectiveState(color) != ResourceState.COLOR_ATTACHMENT_WRITE) {
                 throw new IllegalStateException("color attachment must be in COLOR_ATTACHMENT_WRITE");
             }
         }
-        if (depth != null && depth.state != ResourceState.DEPTH_ATTACHMENT_WRITE) {
+        if (depth != null && states.effectiveState(depth) != ResourceState.DEPTH_ATTACHMENT_WRITE) {
             throw new IllegalStateException("depth attachment must be in DEPTH_ATTACHMENT_WRITE");
         }
+    }
+
+    @Override
+    List<VulkanResource> dependencies() {
+        if (depth == null) return List.copyOf(colors);
+        java.util.ArrayList<VulkanResource> result = new java.util.ArrayList<>(colors);
+        result.add(depth);
+        return List.copyOf(result);
     }
 
     @Override public int width() { requireAlive(); return width; }

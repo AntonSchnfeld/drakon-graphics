@@ -234,6 +234,10 @@ public interface GraphicsDevice extends AutoCloseable {
     /**
      * Creates a fresh command encoder associated with this device.
      *
+     * <p>The caller owns the returned encoder and must close it. A successful
+     * {@link CommandEncoder#finish()} transfers its backend command ownership to
+     * the returned list.</p>
+     *
      * @return an encoder in its initial recording state
      * @throws IllegalStateException if this device is closed
      */
@@ -242,16 +246,19 @@ public interface GraphicsDevice extends AutoCloseable {
     /**
      * Submits a finished command list to this device's ordered submission queue.
      *
-     * <p>A command list must originate from this device and is single-submit in
-     * the current contract. Submission may return before the GPU has completed
-     * the work; resource implementations are responsible for deferring native
-     * destruction when necessary.</p>
+     * <p>A command list must originate from this device and is consumed by a
+     * submission attempt by its originating device. Successful native submission
+     * transfers backend command ownership to the device; validation rejection or
+     * native submission failure leaves the list terminal.
+     * Submission may return before the GPU has completed the work, so resource
+     * implementations defer native destruction when necessary. The caller must
+     * still close the list; closing after successful submission is harmless.</p>
      *
      * @param commands finished command list created by this device
      * @throws NullPointerException if {@code commands} is {@code null}
-     * @throws IllegalArgumentException if the command list belongs to another
-     *         device or has already been submitted
-     * @throws IllegalStateException if this device is closed
+     * @throws IllegalArgumentException if the command list belongs to another device
+     * @throws IllegalStateException if this device is closed or the command list
+     *         is not ready for its one submission attempt
      */
     void submit(CommandList commands);
 

@@ -9,6 +9,7 @@ import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
 import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPass;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbePresentationTargets;
+import io.github.antonschnfeld.drakon.graphics.probe.ProbeLifecycleChecks;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbeTextureInitializationChecks;
 import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
@@ -23,10 +24,15 @@ public final class ApiContractChecks {
     private ApiContractChecks() {}
 
     public static void run() {
+        if (!AutoCloseable.class.isAssignableFrom(CommandEncoder.class)
+                || !AutoCloseable.class.isAssignableFrom(CommandList.class)) {
+            throw new AssertionError("command encoders and lists must have deterministic close semantics");
+        }
         checkPortableDepthState();
         checkPipelineSnapshot();
         checkShaderValueContracts();
         ProbeTextureInitializationChecks.run();
+        ProbeLifecycleChecks.run();
         checkBackendContracts("opengl");
         checkBackendContracts("vulkan");
     }
@@ -126,12 +132,27 @@ public final class ApiContractChecks {
                     .build());
 
             Buffer foreign = first.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.VERTEX)));
-            CommandEncoder secondEncoder = second.createCommandEncoder();
-            expect(IllegalArgumentException.class,
-                    () -> secondEncoder.setVertexBuffer(0, foreign, 0));
+            try (CommandEncoder secondEncoder = second.createCommandEncoder()) {
+                expect(IllegalArgumentException.class,
+                        () -> secondEncoder.setVertexBuffer(0, foreign, 0));
+            }
             Buffer local = second.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.VERTEX)));
-            expect(IllegalArgumentException.class, () -> second.createCommandEncoder().transition(
-                    local, ResourceState.UNDEFINED, ResourceState.COPY_DST));
+            try (CommandEncoder invalidTransition = second.createCommandEncoder()) {
+                expect(IllegalArgumentException.class, () -> invalidTransition.transition(
+                        local, ResourceState.UNDEFINED, ResourceState.COPY_DST));
+            }
+
+            CommandEncoder abandoned = second.createCommandEncoder();
+            abandoned.close();
+            abandoned.close();
+            expect(IllegalStateException.class, abandoned::finish);
+
+            CommandEncoder transferred = second.createCommandEncoder();
+            CommandList closedList = transferred.finish();
+            transferred.close();
+            closedList.close();
+            closedList.close();
+            expect(IllegalStateException.class, () -> second.submit(closedList));
 
             Texture color = second.createTexture(new TextureDescriptor(
                     16, 16, TextureFormat.RGBA8_UNORM,
@@ -151,38 +172,49 @@ public final class ApiContractChecks {
                     second, 1280, 720, List.of(TextureFormat.RGBA8_UNORM), null);
             second.present(presentationTarget);
 
-            CommandEncoder presentationEncoder = second.createCommandEncoder();
-            presentationEncoder.beginRendering(RenderingInfo.builder(presentationTarget)
-                    .color(ColorAttachmentOps.clear(Color.BLACK))
-                    .build());
-            presentationEncoder.endRendering();
-            second.submit(presentationEncoder.finish());
+            try (CommandEncoder presentationEncoder = second.createCommandEncoder()) {
+                presentationEncoder.beginRendering(RenderingInfo.builder(presentationTarget)
+                        .color(ColorAttachmentOps.clear(Color.BLACK))
+                        .build());
+                presentationEncoder.endRendering();
+                try (CommandList presentationCommands = presentationEncoder.finish()) {
+                    second.submit(presentationCommands);
+                }
+            }
             second.present(presentationTarget);
 
-            CommandEncoder scopeEncoder = second.createCommandEncoder();
-            scopeEncoder.transition(color, ResourceState.UNDEFINED, ResourceState.COLOR_ATTACHMENT_WRITE);
-            scopeEncoder.beginRendering(RenderingInfo.builder(target)
-                    .color(ColorAttachmentOps.clear(Color.BLACK))
-                    .build());
-            expect(IllegalStateException.class,
-                    () -> scopeEncoder.transition(color,
-                            ResourceState.COLOR_ATTACHMENT_WRITE,
-                            ResourceState.COPY_SRC));
-            scopeEncoder.endRendering();
+            try (CommandEncoder scopeEncoder = second.createCommandEncoder()) {
+                scopeEncoder.transition(color, ResourceState.UNDEFINED, ResourceState.COLOR_ATTACHMENT_WRITE);
+                scopeEncoder.beginRendering(RenderingInfo.builder(target)
+                        .color(ColorAttachmentOps.clear(Color.BLACK))
+                        .build());
+                expect(IllegalStateException.class,
+                        () -> scopeEncoder.transition(color,
+                                ResourceState.COLOR_ATTACHMENT_WRITE,
+                                ResourceState.COPY_SRC));
+                scopeEncoder.endRendering();
+                try (CommandList scopeCommands = scopeEncoder.finish()) {
+                    second.submit(scopeCommands);
+                }
+            }
 
             CommandEncoder oneShotEncoder = second.createCommandEncoder();
             oneShotEncoder.transition(color,
                     ResourceState.COLOR_ATTACHMENT_WRITE,
                     ResourceState.COPY_SRC);
             CommandList oneShot = oneShotEncoder.finish();
+            oneShotEncoder.close();
             second.submit(oneShot);
-            expect(IllegalArgumentException.class, () -> second.submit(oneShot));
+            oneShot.close();
+            oneShot.close();
+            expect(IllegalStateException.class, () -> second.submit(oneShot));
 
             Texture mismatched = second.createTexture(new TextureDescriptor(
                     8, 8, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.COPY_DST)));
-            CommandEncoder copyEncoder = second.createCommandEncoder();
-            copyEncoder.transition(mismatched, ResourceState.UNDEFINED, ResourceState.COPY_DST);
-            expect(IllegalArgumentException.class, () -> copyEncoder.copyTexture(color, mismatched));
+            try (CommandEncoder copyEncoder = second.createCommandEncoder()) {
+                copyEncoder.transition(mismatched, ResourceState.UNDEFINED, ResourceState.COPY_DST);
+                expect(IllegalArgumentException.class, () -> copyEncoder.copyTexture(color, mismatched));
+            }
         }
     }
 
