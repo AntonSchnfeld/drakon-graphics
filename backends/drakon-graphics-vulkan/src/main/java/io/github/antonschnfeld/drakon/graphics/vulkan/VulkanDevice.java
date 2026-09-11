@@ -36,10 +36,10 @@ import static org.lwjgl.vulkan.KHRSwapchain.*;
  *
  * <p>This is intentionally a correctness-first spike, not a production Vulkan
  * allocator or scheduler. Buffers use host-visible coherent memory, images use
- * dedicated device-local allocations, descriptor sets come from one generously
- * sized pool, and submission waits for the queue after every command list. Those
- * choices are deliberately documented here so they cannot accidentally become
- * performance assumptions in {@code drakon-graphics}.</p>
+ * dedicated device-local allocations, and descriptor sets come from one
+ * generously sized pool. Presentation submissions use frame synchronization and
+ * do not wait for the queue after every submission; non-presentation submissions
+ * currently wait for the queue to idle before freeing their command buffer.</p>
  *
  * <p>The important part of this implementation is that all native Vulkan state
  * is derived from existing portable descriptors. If a Vulkan concept cannot be
