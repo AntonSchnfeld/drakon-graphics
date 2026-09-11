@@ -2,6 +2,7 @@ package io.github.antonschnfeld.drakon.graphics.render;
 
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.command.CommandEncoder;
+import io.github.antonschnfeld.drakon.graphics.command.CommandList;
 import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPass;
 import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPipeline;
 
@@ -46,10 +47,13 @@ public final class Renderer {
         List<? extends RenderPass> passes = List.copyOf(
                 Objects.requireNonNull(pipeline.passes(), "pipeline.passes()"));
 
-        CommandEncoder commands = device.createCommandEncoder();
-        for (RenderPass pass : passes) {
-            pass.record(commands);
+        try (CommandEncoder commands = device.createCommandEncoder()) {
+            for (RenderPass pass : passes) {
+                pass.record(commands);
+            }
+            try (CommandList commandList = commands.finish()) {
+                device.submit(commandList);
+            }
         }
-        device.submit(commands.finish());
     }
 }

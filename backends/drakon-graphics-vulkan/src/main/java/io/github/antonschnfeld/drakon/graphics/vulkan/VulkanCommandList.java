@@ -9,17 +9,36 @@ import java.util.List;
 final class VulkanCommandList implements CommandList {
     final VulkanDevice device;
     final VkCommandBuffer commandBuffer;
-    final VulkanPresentationTarget presentationTarget;
-    private boolean submitted;
+    final VulkanPresentationState presentationState;
+    final VulkanCommandState commandState;
+    final List<VulkanResource> resources;
+    private final VulkanCommandOwnership ownership = new VulkanCommandOwnership();
 
-    VulkanCommandList(VulkanDevice device, VkCommandBuffer commandBuffer, VulkanPresentationTarget presentationTarget) {
+    VulkanCommandList(
+            VulkanDevice device,
+            VkCommandBuffer commandBuffer,
+            VulkanPresentationState presentationState,
+            VulkanCommandState commandState,
+            List<VulkanResource> resources) {
         this.device = device;
         this.commandBuffer = commandBuffer;
-        this.presentationTarget = presentationTarget;
+        this.presentationState = presentationState;
+        this.commandState = commandState;
+        this.resources = List.copyOf(resources);
     }
 
-    void markSubmitted() {
-        if (submitted) throw new IllegalStateException("command list is single-submit");
-        submitted = true;
+    void requireReady() { ownership.requireReady(); }
+
+    void beginSubmission() { ownership.beginSubmission(); }
+
+    void markSubmitted() { ownership.transferToDevice(); }
+
+    void failAndRelease() {
+        if (ownership.failAndClaimRelease()) device.freeCommandBufferIfOpen(commandBuffer);
+    }
+
+    @Override
+    public void close() {
+        if (ownership.closeAndClaimRelease()) device.freeCommandBufferIfOpen(commandBuffer);
     }
 }

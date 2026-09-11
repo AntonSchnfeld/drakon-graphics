@@ -11,8 +11,11 @@ import io.github.antonschnfeld.drakon.graphics.resource.Texture;
 /**
  * Records backend-agnostic GPU commands into one command list.
  *
- * <p>An encoder is mutable and single-thread confined. Calling {@link #finish()}
- * permanently ends recording; no other command may be recorded afterward.</p>
+ * <p>An encoder is mutable, single-thread confined, and owns its recording
+ * resources until {@link #finish()} transfers that ownership to the returned
+ * {@link CommandList}. Closing an unfinished encoder aborts it and releases its
+ * recording resources. Closing it after a successful finish is harmless and
+ * does not affect the returned list.</p>
  *
  * <p>All GPU resources supplied to an encoder must originate from the same
  * {@link GraphicsDevice} that created the encoder.
@@ -22,7 +25,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.Texture;
  * exception because they are not exposed as resources the application can
  * transition itself.</p>
  */
-public interface CommandEncoder {
+public interface CommandEncoder extends AutoCloseable {
     /**
      * Begins a graphics rendering scope.
      *
@@ -187,4 +190,15 @@ public interface CommandEncoder {
      *         encoder was already finished
      */
     CommandList finish();
+
+    /**
+     * Aborts this encoder if it is still recording and releases its backend
+     * recording resources.
+     *
+     * <p>This method is idempotent. After it returns, recording and finishing
+     * are invalid. If {@link #finish()} already succeeded, ownership has moved
+     * to the returned command list and this method does not affect that list.</p>
+     */
+    @Override
+    void close();
 }

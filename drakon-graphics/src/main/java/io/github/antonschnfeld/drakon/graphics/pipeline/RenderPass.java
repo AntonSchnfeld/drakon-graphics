@@ -12,8 +12,9 @@ import io.github.antonschnfeld.drakon.graphics.render.Renderer;
  * captured state. The interface intentionally does not expose a universal
  * context/service-locator object.</p>
  *
- * <p>A pass must not call {@link CommandEncoder#finish()}; command-list lifetime
- * belongs to the renderer executing the containing {@link RenderPipeline}.</p>
+ * <p>A pass must not call {@link CommandEncoder#finish()} or
+ * {@link CommandEncoder#close()}; encoder and command-list lifetime belongs to
+ * the renderer executing the containing {@link RenderPipeline}.</p>
  */
 @FunctionalInterface
 public interface RenderPass {
