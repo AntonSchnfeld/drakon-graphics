@@ -1,16 +1,13 @@
 package io.github.antonschnfeld.drakon.graphics.opengl;
 
-import io.github.antonschnfeld.drakon.graphics.resource.RenderTarget;
 import io.github.antonschnfeld.drakon.graphics.resource.TextureFormat;
 
 import java.util.List;
 
-final class OpenGLRenderTarget extends OpenGLResource implements RenderTarget {
+final class OpenGLRenderTarget extends OpenGLResource implements OpenGLRenderTargetAccess {
     final int framebuffer;
     private final List<OpenGLTexture> colors;
     private final OpenGLTexture depth;
-    private final boolean presentable;
-    private final long window;
     private final int fixedWidth;
     private final int fixedHeight;
     private final List<TextureFormat> colorFormats;
@@ -21,8 +18,6 @@ final class OpenGLRenderTarget extends OpenGLResource implements RenderTarget {
             int framebuffer,
             List<OpenGLTexture> colors,
             OpenGLTexture depth,
-            boolean presentable,
-            long window,
             int width,
             int height,
             List<TextureFormat> colorFormats,
@@ -31,29 +26,34 @@ final class OpenGLRenderTarget extends OpenGLResource implements RenderTarget {
         this.framebuffer = framebuffer;
         this.colors = List.copyOf(colors);
         this.depth = depth;
-        this.presentable = presentable;
-        this.window = window;
         fixedWidth = width;
         fixedHeight = height;
         this.colorFormats = List.copyOf(colorFormats);
         this.depthFormat = depthFormat;
     }
 
-    boolean presentable() { return presentable; }
-    long window() { return window; }
     List<OpenGLTexture> colors() { return colors; }
     OpenGLTexture depth() { return depth; }
+
+    @Override public OpenGLDevice device() { return device; }
+    @Override public int framebuffer() { requireAlive(); return framebuffer; }
+
+    @Override
+    public void present() {
+        requireAlive();
+        throw new IllegalArgumentException("render target has no presentation integration");
+    }
 
     @Override
     public int width() {
         requireAlive();
-        return presentable ? device.framebufferWidth(window) : fixedWidth;
+        return fixedWidth;
     }
 
     @Override
     public int height() {
         requireAlive();
-        return presentable ? device.framebufferHeight(window) : fixedHeight;
+        return fixedHeight;
     }
 
     @Override public List<TextureFormat> colorFormats() { requireAlive(); return colorFormats; }

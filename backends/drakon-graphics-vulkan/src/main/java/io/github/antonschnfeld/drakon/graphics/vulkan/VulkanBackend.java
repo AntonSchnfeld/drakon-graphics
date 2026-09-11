@@ -10,7 +10,7 @@ import java.util.Objects;
 import static org.lwjgl.vulkan.VK10.VK_API_VERSION_MAJOR;
 import static org.lwjgl.vulkan.VK10.VK_API_VERSION_MINOR;
 
-/** LWJGL Vulkan 1.3 backend service provider used by the backend spike. */
+/** LWJGL Vulkan 1.3 backend service provider. */
 public final class VulkanBackend implements GraphicsBackend {
     /** Creates a stateless Vulkan backend provider. */
     public VulkanBackend() {}
@@ -41,22 +41,22 @@ public final class VulkanBackend implements GraphicsBackend {
     }
 
     /**
-     * Creates a visible GLFW/Vulkan device whose swapchain is represented by a
-     * stable presentation-backed RenderTarget. This bootstrap is deliberately
-     * backend-specific; window creation is not part of drakon-graphics core.
+     * Creates a presentation-capable device using an external surface factory.
+     *
+     * <p>The factory creates the first surface after instance creation so device
+     * and queue selection can verify presentation support. The resulting target
+     * owns the surface and Vulkan swapchain resources, while the factory retains
+     * ownership of all platform state.</p>
      *
      * @param config device options
-     * @param width positive initial window width
-     * @param height positive initial window height
-     * @param title non-null window title
-     * @return windowed Vulkan device
+     * @param surfaceFactory external surface and extent integration
+     * @return the device and its first presentation-compatible render target
      */
-    public VulkanDevice createWindowedDevice(
+    public VulkanPresentation createPresentationDevice(
             GraphicsDeviceConfig config,
-            int width,
-            int height,
-            String title) {
-        return VulkanDevice.createWindowed(Objects.requireNonNull(config, "config"), width, height, title);
+            VulkanSurfaceFactory surfaceFactory) {
+        return VulkanDevice.createPresentation(
+                Objects.requireNonNull(config, "config"),
+                Objects.requireNonNull(surfaceFactory, "surfaceFactory"));
     }
 }
-

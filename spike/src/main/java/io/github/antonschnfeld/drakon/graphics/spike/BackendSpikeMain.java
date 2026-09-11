@@ -41,6 +41,7 @@ import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
 import io.github.antonschnfeld.drakon.graphics.shader.SpirvShaderCode;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanBackend;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanDevice;
+import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanPresentation;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
@@ -116,24 +117,30 @@ public final class BackendSpikeMain {
 
     private static void runOpenGL() {
         OpenGLBackend backend = new OpenGLBackend();
-        try (OpenGLDevice device = backend.createWindowedDevice(
-            GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics OpenGL spike")) {
-            try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
-                    Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
-                    Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
-                    Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
-                    Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
-                verifyInitializationSmokeBuffer(heapInitializedBuffer);
-                verifyInitializationSmokeBuffer(directInitializedBuffer);
-                verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
-                verifyInitializationSmokeTexture(heapInitializedTexture);
-                verifyInitializationSmokeTexture(directInitializedTexture);
-                try (Shader vertex = device.createShader(new ShaderDescriptor(
-                        ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
-                        Shader fragment = device.createShader(new ShaderDescriptor(
-                                ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_FRAGMENT_GLSL)));
-                        TexturedMesh mesh = createTexturedMesh(device, device.defaultRenderTarget(), vertex, fragment)) {
-                    runWindowLoop(device, device.defaultRenderTarget(), mesh, device::shouldClose, device::pollEvents);
+        try (GlfwPlatform platform = new GlfwPlatform();
+                GlfwWindow window = platform.createOpenGLWindow(
+                        800, 500, "drakon-graphics OpenGL spike")) {
+            window.makeContextCurrent();
+            window.disableSwapInterval();
+            try (OpenGLDevice device = backend.createDevice(GraphicsDeviceConfig.debug());
+                    GlfwOpenGLRenderTarget target = new GlfwOpenGLRenderTarget(device, window)) {
+                try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
+                        Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
+                        Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
+                        Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
+                        Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
+                    verifyInitializationSmokeBuffer(heapInitializedBuffer);
+                    verifyInitializationSmokeBuffer(directInitializedBuffer);
+                    verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
+                    verifyInitializationSmokeTexture(heapInitializedTexture);
+                    verifyInitializationSmokeTexture(directInitializedTexture);
+                    try (Shader vertex = device.createShader(new ShaderDescriptor(
+                            ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
+                            Shader fragment = device.createShader(new ShaderDescriptor(
+                                    ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_FRAGMENT_GLSL)));
+                            TexturedMesh mesh = createTexturedMesh(device, target, vertex, fragment)) {
+                        runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
+                    }
                 }
             }
         }
@@ -141,27 +148,33 @@ public final class BackendSpikeMain {
 
     private static void runVulkan() {
         VulkanBackend backend = new VulkanBackend();
-        try (VulkanDevice device = backend.createWindowedDevice(
-            GraphicsDeviceConfig.debug(), 800, 500, "drakon-graphics Vulkan spike")) {
-            try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
-                    Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
-                    Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
-                    Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
-                    Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
-                verifyInitializationSmokeBuffer(heapInitializedBuffer);
-                verifyInitializationSmokeBuffer(directInitializedBuffer);
-                verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
-                verifyInitializationSmokeTexture(heapInitializedTexture);
-                verifyInitializationSmokeTexture(directInitializedTexture);
-                try (Shader vertex = device.createShader(new ShaderDescriptor(
-                        ShaderStage.VERTEX, "main",
-                        new SpirvShaderCode(compileSpirv(VERTEX_GLSL, shaderc_glsl_vertex_shader))));
-                        Shader fragment = device.createShader(new ShaderDescriptor(
-                                ShaderStage.FRAGMENT, "main",
-                                new SpirvShaderCode(compileSpirv(VULKAN_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
-                        TexturedMesh mesh = createTexturedMesh(device, device.defaultRenderTarget(), vertex, fragment)) {
-                    runVulkanLifetimeStress(device, device.defaultRenderTarget(), vertex, fragment);
-                    runWindowLoop(device, device.defaultRenderTarget(), mesh, device::shouldClose, device::pollEvents);
+        try (GlfwPlatform platform = new GlfwPlatform();
+                GlfwWindow window = platform.createVulkanWindow(
+                        800, 500, "drakon-graphics Vulkan spike")) {
+            VulkanPresentation presentation = backend.createPresentationDevice(
+                    GraphicsDeviceConfig.debug(), new GlfwVulkanSurfaceFactory(window));
+            try (VulkanDevice device = presentation.device();
+                    RenderTarget target = presentation.target()) {
+                try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
+                        Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
+                        Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
+                        Texture heapInitializedTexture = createInitializationSmokeTexture(device, false);
+                        Texture directInitializedTexture = createInitializationSmokeTexture(device, true)) {
+                    verifyInitializationSmokeBuffer(heapInitializedBuffer);
+                    verifyInitializationSmokeBuffer(directInitializedBuffer);
+                    verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
+                    verifyInitializationSmokeTexture(heapInitializedTexture);
+                    verifyInitializationSmokeTexture(directInitializedTexture);
+                    try (Shader vertex = device.createShader(new ShaderDescriptor(
+                            ShaderStage.VERTEX, "main",
+                            new SpirvShaderCode(compileSpirv(VERTEX_GLSL, shaderc_glsl_vertex_shader))));
+                            Shader fragment = device.createShader(new ShaderDescriptor(
+                                    ShaderStage.FRAGMENT, "main",
+                                    new SpirvShaderCode(compileSpirv(VULKAN_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
+                            TexturedMesh mesh = createTexturedMesh(device, target, vertex, fragment)) {
+                        runVulkanLifetimeStress(device, target, vertex, fragment);
+                        runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
+                    }
                 }
             }
         }

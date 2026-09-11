@@ -29,12 +29,22 @@ public final class ApiContractChecks {
             throw new AssertionError("command encoders and lists must have deterministic close semantics");
         }
         checkPortableDepthState();
+        checkRenderTargetIsPlatformAgnostic();
         checkPipelineSnapshot();
         checkShaderValueContracts();
         ProbeTextureInitializationChecks.run();
         ProbeLifecycleChecks.run();
         checkBackendContracts("opengl");
         checkBackendContracts("vulkan");
+    }
+
+    private static void checkRenderTargetIsPlatformAgnostic() {
+        Set<String> methods = Arrays.stream(RenderTarget.class.getDeclaredMethods())
+                .map(java.lang.reflect.Method::getName)
+                .collect(java.util.stream.Collectors.toSet());
+        if (!methods.equals(Set.of("width", "height", "colorFormats", "depthFormat"))) {
+            throw new AssertionError("core RenderTarget must expose only portable extent and format metadata: " + methods);
+        }
     }
 
     private static void checkPortableDepthState() {
@@ -171,6 +181,11 @@ public final class ApiContractChecks {
             RenderTarget presentationTarget = ProbePresentationTargets.create(
                     second, 1280, 720, List.of(TextureFormat.RGBA8_UNORM), null);
             second.present(presentationTarget);
+            expect(IllegalArgumentException.class, () -> first.present(presentationTarget));
+
+            RenderTarget anotherPresentationTarget = ProbePresentationTargets.create(
+                    second, 640, 480, List.of(TextureFormat.RGBA8_UNORM), null);
+            second.present(anotherPresentationTarget);
 
             try (CommandEncoder presentationEncoder = second.createCommandEncoder()) {
                 presentationEncoder.beginRendering(RenderingInfo.builder(presentationTarget)
@@ -182,6 +197,9 @@ public final class ApiContractChecks {
                 }
             }
             second.present(presentationTarget);
+            presentationTarget.close();
+            expect(IllegalStateException.class, () -> second.present(presentationTarget));
+            second.present(anotherPresentationTarget);
 
             try (CommandEncoder scopeEncoder = second.createCommandEncoder()) {
                 scopeEncoder.transition(color, ResourceState.UNDEFINED, ResourceState.COLOR_ATTACHMENT_WRITE);
