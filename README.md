@@ -1,46 +1,208 @@
-# drakon-graphics — LWJGL backend spike
+# drakon-graphics
 
-This is the first real-backend pressure test of the `drakon-graphics` API after Iterations 1-6.
+A small, explicit, backend-neutral graphics API for Java 21.
 
-This repository is the source of truth for `drakon-graphics`. It is a Maven reactor of independent modules; no module inherits from the root aggregator:
+`drakon-graphics` sits between raw LWJGL graphics APIs and a full game engine. It provides a portable rendering interface for building real-time renderers without forcing application rendering code to depend directly on OpenGL or Vulkan.
+
+The goal is simple:
+
+> Write the renderer once. Choose the graphics backend separately.
+
+OpenGL 4.3 and Vulkan 1.3 are currently supported through independent backend modules.
+
+> [!NOTE]
+> `drakon-graphics` is currently pre-0.1.0 and under active development. Public APIs may still change before the first release.
+
+## Vision
+
+Java has excellent access to native graphics APIs through LWJGL, but using them directly means tying renderer architecture to a particular backend and taking on a large amount of backend-specific lifecycle, synchronization, and state management.
+
+`drakon-graphics` provides a deliberately small layer above those APIs.
+
+It is intended to be:
+
+- **Backend-neutral** — portable rendering code should not contain OpenGL or Vulkan calls.
+- **Explicit** — resources, state transitions, command recording, submission, and presentation have visible contracts.
+- **Low-level** — the library does not impose a scene graph, ECS, camera system, material system, or asset model.
+- **Composable** — applications remain free to build their own renderer architecture on top.
+- **Predictable** — GPU resource ownership and lifetime are part of the API rather than hidden behind global state.
+- **Practical** — abstractions are added when required by real backend behavior rather than to imitate a larger engine API.
+
+`drakon-graphics` is a graphics library, not a game engine.
+
+## Current architecture
+
+The project is split into independent Maven modules:
 
 ```text
-drakon-graphics-build (aggregator only)
+drakon-graphics-build
 ├── drakon-graphics
-├── backends/drakon-graphics-opengl
-├── backends/drakon-graphics-vulkan
-└── spike (development-only smoke harness)
+├── backends/
+│   ├── drakon-graphics-opengl
+│   └── drakon-graphics-vulkan
+└── spike/
 ```
 
-The public Maven artifacts are:
+Public modules:
 
-- `io.github.antonschnfeld:drakon-graphics`
-- `io.github.antonschnfeld:drakon-graphics-opengl`
-- `io.github.antonschnfeld:drakon-graphics-vulkan`
+```text
+io.github.antonschnfeld:drakon-graphics
+io.github.antonschnfeld:drakon-graphics-opengl
+io.github.antonschnfeld:drakon-graphics-vulkan
+```
 
-Java packages use `io.github.antonschnfeld.drakon.graphics`. The aggregator and spike are build/development infrastructure and are not deployed as public artifacts.
+The root module is only a Maven reactor aggregator.
+
+`spike` contains development and backend-validation applications and is not intended to be published as a library artifact.
+
+## Core concepts
+
+### GraphicsDevice
+
+A `GraphicsDevice` owns GPU resources and provides the backend-neutral operations used to create resources, record work, submit commands, and present render targets.
+
+### RenderTarget
+
+`RenderTarget` is the portable destination for rendering.
+
+A target may represent ordinary texture attachments or a presentation destination supplied by an external backend integration.
+
+There is no portable `Window`, `Surface`, or `Swapchain` abstraction.
+
+Window-system ownership deliberately remains outside `drakon-graphics`.
+
+### Commands
+
+GPU work is recorded through a `CommandEncoder` and finished into a `CommandList`.
+
+Both have deterministic lifetimes through `AutoCloseable`.
+
+A finished command list is single-submit: successful submission transfers ownership of its native command resources to the device until the GPU no longer needs them.
+
+### Resource states
+
+Application-visible resource usage is explicit.
+
+Textures and buffers transition between portable states such as:
+
+- `VERTEX_READ`
+- `INDEX_READ`
+- `UNIFORM_READ`
+- `SAMPLED_READ`
+- `COLOR_ATTACHMENT_WRITE`
+- `DEPTH_ATTACHMENT_WRITE`
+- `COPY_SRC`
+- `COPY_DST`
+
+Backends map those states to the synchronization and layout mechanisms required by their native API.
+
+### Render pipelines and passes
+
+`RenderPipeline` and `RenderPass` provide lightweight composition of rendering work without introducing engine-level concepts into the graphics layer.
+
+The library does not require a scene, world, camera, material model, or ECS.
+
+## Backend support
+
+### OpenGL
+
+The OpenGL backend currently targets OpenGL 4.3.
+
+The application or platform layer owns the OpenGL context. A compatible context must be current when the device is created and while it is used.
+
+The backend does not create or destroy windows or contexts.
+
+### Vulkan
+
+The Vulkan backend currently targets Vulkan 1.3.
+
+Headless devices can be created independently of presentation.
+
+Presentation-capable devices use an external surface integration during bootstrap so that physical-device and queue selection can verify presentation support.
+
+Swapchain management, image acquisition, synchronization, and presentation remain Vulkan backend responsibilities; window-system state remains external.
+
+## Presentation
+
+Presentation uses the same portable operation regardless of backend:
+
+```java
+device.present(renderTarget);
+```
+
+Presentation capability is intentionally not represented by a separate core target subtype.
+
+A compatible backend or platform integration may provide a presentable `RenderTarget`; ordinary texture-backed targets remain valid render targets but are not necessarily presentable.
+
+This also avoids treating one target as a privileged global or "default" render target.
+
+## Shaders
+
+Shader compilation is intentionally separate from the graphics API.
+
+The core currently accepts shader representations such as:
+
+- GLSL source
+- SPIR-V bytecode
+
+`drakon-graphics` creates GPU shader resources from those representations but does not contain a general shader compiler or shader-language translation layer.
+
+This keeps graphics-device responsibilities separate from shader tooling.
+
+See [`docs/SHADER_ARCHITECTURE.md`](docs/SHADER_ARCHITECTURE.md) for the current shader architecture.
+
+## Current 0.1.0 scope
+
+The first release is focused on being sufficient to build a small real-time textured 3D renderer on either OpenGL or Vulkan without application rendering code touching the native graphics APIs.
+
+The current scope includes:
+
+- OpenGL and Vulkan backends
+- presentation and offscreen render targets
+- vertex, index, and uniform buffers
+- 2D textures
+- samplers
+- GLSL and SPIR-V shader representations
+- typed resource bindings
+- graphics pipeline state
+- vertex and index input
+- non-indexed and indexed drawing
+- instanced drawing
+- triangle, line, and point topology
+- face culling
+- depth testing and writing
+- source-alpha blending
+- viewport and scissor state
+- explicit resource transitions
+- texture-to-texture copies
+- command recording and submission
+- deterministic GPU resource lifetimes
+
+Some important 0.1.0 work is still in progress, including safe dynamic per-frame buffer updates, broader validation, additional real-world rendering workloads, and release packaging.
+
+The detailed release plan is available in [`docs/0.1.0-RELEASE-PLAN.md`](docs/0.1.0-RELEASE-PLAN.md).
 
 ## Requirements
 
+Development currently requires:
+
 - JDK 21+
 - Maven 3.9+
-- current GPU drivers
-- OpenGL 4.3+ for the OpenGL smoke path
-- Vulkan 1.3-capable driver/runtime for the Vulkan smoke path
+- LWJGL 3.4.3
+- OpenGL 4.3+ for the OpenGL backend
+- Vulkan 1.3 for the Vulkan backend
 
-LWJGL is pinned to **3.4.3**.
+The portable core module itself does not depend on LWJGL.
 
-No JOML dependency is currently necessary.
+## Building
 
-## 1. Compile and validate the complete Maven reactor
-
-From the project root:
+Build and verify the complete reactor from the repository root:
 
 ```bash
 mvn verify
 ```
 
-The compiler is configured with:
+The project is compiled with:
 
 ```text
 --release 21
@@ -48,85 +210,36 @@ The compiler is configured with:
 -Werror
 ```
 
-The core module also runs strict Javadoc/doclint and the existing A-J probe + API contract suite during `verify`.
+Public core Javadocs are also checked with strict doclint.
 
-## 2. Run the OpenGL smoke test
-
-Install the reactor artifacts once:
+To install the current snapshot artifacts into your local Maven repository:
 
 ```bash
 mvn install
 ```
 
-Then:
+## Development backend demo
+
+The repository contains a development-only `spike` module used to exercise the real OpenGL and Vulkan implementations.
+
+After installing the reactor:
 
 ```bash
 mvn -f spike/pom.xml exec:java -Dexec.args=opengl
 ```
 
-Or on Windows:
-
-```text
-run-opengl.cmd
-```
-
-Expected result: an 800x500 GLFW window rendering a colored triangle through the portable Drakon render API.
-
-## 3. Run the Vulkan smoke test
+or:
 
 ```bash
 mvn -f spike/pom.xml exec:java -Dexec.args=vulkan
 ```
 
-Or on Windows:
+The spike owns its window-system integration and is intentionally separate from the production graphics modules.
 
-```text
-run-vulkan.cmd
-```
+## Project status
 
-The spike harness uses Shaderc to compile its tiny test GLSL into SPIR-V. Shaderc is deliberately not a dependency of the Vulkan backend itself.
+`drakon-graphics` has not reached 0.1.0 yet.
 
-Expected result: the same colored triangle through the Vulkan backend and the portable `RenderTarget` + `GraphicsDevice.present(...)` contract.
+The current focus is correctness and establishing a compact public API that can support the same real renderer across OpenGL and Vulkan before expanding the feature surface.
 
-## Native classifiers
-
-The independent `spike/pom.xml` activates LWJGL runtime-native classifiers for common desktop architectures:
-
-- Windows x64 -> `natives-windows`
-- Windows ARM64 -> `natives-windows-arm64`
-- Linux x64 -> `natives-linux`
-- Linux ARM64 -> `natives-linux-arm64`
-- macOS x64 -> `natives-macos`
-- macOS ARM64 -> `natives-macos-arm64`
-
-If Maven does not recognize your JVM's architecture spelling, override manually, for example:
-
-```bash
-mvn -Dlwjgl.natives=natives-windows verify
-```
-
-## Core-only validation without Maven
-
-The portable API does not require LWJGL. On a Unix-like shell with JDK 21:
-
-```bash
-./validate-core.sh
-```
-
-This performs strict javac/Javadoc validation and runs the A-J probe + contract suite.
-
-## Important status
-
-The complete Maven reactor now passes `mvn verify` against the real LWJGL dependencies, including strict core Javadoc and the A-J probe + API contract suite. All modules compile for Java 21 with `-Xlint:all -Werror`.
-
-GPU/window smoke tests have not been run as part of the package and Maven-coordinate migration. Successful compilation does not establish backend runtime correctness; the historical preparation status and open backend questions remain in the decision logs.
-
-Do not suppress backend compiler/runtime failures. They are the backend spike's primary evidence.
-
-Read [`BACKEND_SPIKE_FINDINGS.md`](docs/BACKEND_SPIKE_FINDINGS.md) before changing the portable API. It records which changes have already been forced by backend pressure and what questions the real execution is meant to settle.
-
-Other retained decision logs:
-
-- [ITERATION_6_PRESENTATION_FINDINGS.md](docs/ITERATION_6_PRESENTATION_FINDINGS.md)
-- [ITERATION_5_SHADER_FINDINGS.md](docs/ITERATION_5_SHADER_FINDINGS.md)
-- [SHADER_ARCHITECTURE.md](docs/SHADER_ARCHITECTURE.md)
+Features such as compute shaders, storage resources, indirect rendering, bindless rendering, render graphs, and more advanced texture types are deliberately outside the initial 0.1.0 scope.
