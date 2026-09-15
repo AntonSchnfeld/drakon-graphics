@@ -11,6 +11,7 @@ import io.github.antonschnfeld.drakon.graphics.pipeline.RenderPass;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbePresentationTargets;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbeLifecycleChecks;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbeTextureInitializationChecks;
+import io.github.antonschnfeld.drakon.graphics.probe.ProbeValidationParityChecks;
 import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 import io.github.antonschnfeld.drakon.graphics.shader.*;
@@ -29,11 +30,13 @@ public final class ApiContractChecks {
             throw new AssertionError("command encoders and lists must have deterministic close semantics");
         }
         checkPortableDepthState();
+        checkVertexLayoutOverflow();
         checkRenderTargetIsPlatformAgnostic();
         checkPipelineSnapshot();
         checkShaderValueContracts();
         ProbeTextureInitializationChecks.run();
         ProbeLifecycleChecks.run();
+        ProbeValidationParityChecks.run();
         checkBackendContracts("opengl");
         checkBackendContracts("vulkan");
     }
@@ -50,6 +53,13 @@ public final class ApiContractChecks {
     private static void checkPortableDepthState() {
         expect(IllegalArgumentException.class,
                 () -> new DepthState(false, true, CompareOp.ALWAYS));
+    }
+
+    private static void checkVertexLayoutOverflow() {
+        expect(IllegalArgumentException.class, () -> VertexLayout.builder()
+                .binding(0, Integer.MAX_VALUE, VertexInputRate.PER_VERTEX)
+                .attribute(0, 0, VertexFormat.FLOAT4, Integer.MAX_VALUE - 4)
+                .build());
     }
 
     private static void checkPipelineSnapshot() {

@@ -3,12 +3,8 @@ package io.github.antonschnfeld.drakon.graphics.vulkan;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsBackend;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
-import org.lwjgl.vulkan.VK;
 
 import java.util.Objects;
-
-import static org.lwjgl.vulkan.VK10.VK_API_VERSION_MAJOR;
-import static org.lwjgl.vulkan.VK10.VK_API_VERSION_MINOR;
 
 /** LWJGL Vulkan 1.3 backend service provider. */
 public final class VulkanBackend implements GraphicsBackend {
@@ -19,10 +15,9 @@ public final class VulkanBackend implements GraphicsBackend {
 
     @Override
     public boolean isSupported() {
-        try {
-            int version = VK.getInstanceVersionSupported();
-            return VK_API_VERSION_MAJOR(version) > 1
-                    || (VK_API_VERSION_MAJOR(version) == 1 && VK_API_VERSION_MINOR(version) >= 3);
+        try (VulkanDevice probe = VulkanDevice.createHeadless(GraphicsDeviceConfig.defaults())) {
+            probe.requireOpen();
+            return true;
         } catch (LinkageError | RuntimeException ignored) {
             return false;
         }

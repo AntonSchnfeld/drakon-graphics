@@ -23,6 +23,10 @@ final class OpenGLBindingPlan {
         return layouts.get(group);
     }
 
+    int layoutCount() {
+        return layouts.size();
+    }
+
     int slot(Binding<?> binding) {
         Integer slot = slots.get(binding);
         if (slot == null) {

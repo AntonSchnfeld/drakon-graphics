@@ -53,6 +53,7 @@ public final class VulkanDevice implements GraphicsDevice {
     private final VkQueue queue;
     private final long commandPool;
     private final long descriptorPool;
+    private final long uniformBufferOffsetAlignment;
     private final boolean presentationEnabled;
     private final VulkanShaderTarget shaderTarget = new VulkanShaderTarget(1, 3, 1, 6);
     private final List<VulkanResource> resources = new ArrayList<>();
@@ -70,6 +71,7 @@ public final class VulkanDevice implements GraphicsDevice {
             VkQueue queue,
             long commandPool,
             long descriptorPool,
+            long uniformBufferOffsetAlignment,
             boolean presentationEnabled) {
         this.config = config;
         this.instance = instance;
@@ -79,6 +81,7 @@ public final class VulkanDevice implements GraphicsDevice {
         this.queue = queue;
         this.commandPool = commandPool;
         this.descriptorPool = descriptorPool;
+        this.uniformBufferOffsetAlignment = uniformBufferOffsetAlignment;
         this.presentationEnabled = presentationEnabled;
     }
 
@@ -128,39 +131,51 @@ public final class VulkanDevice implements GraphicsDevice {
                 PointerBuffer pDevice = stack.mallocPointer(1);
                 check(vkCreateDevice(physicalDevice, deviceInfo, null, pDevice), "vkCreateDevice");
                 VkDevice device = new VkDevice(pDevice.get(0), physicalDevice, deviceInfo);
+                long commandPool = 0L;
+                long descriptorPool = 0L;
+                try {
 
-                PointerBuffer pQueue = stack.mallocPointer(1);
-                vkGetDeviceQueue(device, queueFamily, 0, pQueue);
-                VkQueue queue = new VkQueue(pQueue.get(0), device);
+                    PointerBuffer pQueue = stack.mallocPointer(1);
+                    vkGetDeviceQueue(device, queueFamily, 0, pQueue);
+                    VkQueue queue = new VkQueue(pQueue.get(0), device);
 
-                VkCommandPoolCreateInfo commandPoolInfo = VkCommandPoolCreateInfo.calloc(stack)
-                        .sType$Default()
-                        .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
-                        .queueFamilyIndex(queueFamily);
-                LongBuffer pCommandPool = stack.mallocLong(1);
-                check(vkCreateCommandPool(device, commandPoolInfo, null, pCommandPool), "vkCreateCommandPool");
+                    VkCommandPoolCreateInfo commandPoolInfo = VkCommandPoolCreateInfo.calloc(stack)
+                            .sType$Default()
+                            .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
+                            .queueFamilyIndex(queueFamily);
+                    LongBuffer pCommandPool = stack.mallocLong(1);
+                    check(vkCreateCommandPool(device, commandPoolInfo, null, pCommandPool), "vkCreateCommandPool");
+                    commandPool = pCommandPool.get(0);
 
-                VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-                sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1024);
-                sizes.get(1).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1024);
-                VkDescriptorPoolCreateInfo descriptorPoolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
-                        .sType$Default()
-                        .flags(VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)
-                        .maxSets(1024)
-                        .pPoolSizes(sizes);
-                LongBuffer pDescriptorPool = stack.mallocLong(1);
-                check(vkCreateDescriptorPool(device, descriptorPoolInfo, null, pDescriptorPool), "vkCreateDescriptorPool");
+                    VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
+                    sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1024);
+                    sizes.get(1).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1024);
+                    VkDescriptorPoolCreateInfo descriptorPoolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
+                            .sType$Default()
+                            .flags(VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)
+                            .maxSets(1024)
+                            .pPoolSizes(sizes);
+                    LongBuffer pDescriptorPool = stack.mallocLong(1);
+                    check(vkCreateDescriptorPool(device, descriptorPoolInfo, null, pDescriptorPool), "vkCreateDescriptorPool");
+                    descriptorPool = pDescriptorPool.get(0);
 
-                return new VulkanDevice(
-                        config,
-                        instance,
-                        physicalDevice,
-                        device,
-                        queueFamily,
-                        queue,
-                        pCommandPool.get(0),
-                        pDescriptorPool.get(0),
-                        false);
+                    return new VulkanDevice(
+                            config,
+                            instance,
+                            physicalDevice,
+                            device,
+                            queueFamily,
+                            queue,
+                            commandPool,
+                            descriptorPool,
+                            uniformBufferOffsetAlignment(physicalDevice, stack),
+                            false);
+                } catch (RuntimeException | Error failure) {
+                    if (descriptorPool != 0L) vkDestroyDescriptorPool(device, descriptorPool, null);
+                    if (commandPool != 0L) vkDestroyCommandPool(device, commandPool, null);
+                    vkDestroyDevice(device, null);
+                    throw failure;
+                }
             } catch (RuntimeException | Error failure) {
                 vkDestroyInstance(instance, null);
                 throw failure;
@@ -238,7 +253,8 @@ public final class VulkanDevice implements GraphicsDevice {
 
             result = new VulkanDevice(
                     config, instance, physicalDevice, device, queueFamily, queue,
-                    pCommandPool.get(0), pDescriptorPool.get(0), true);
+                    pCommandPool.get(0), pDescriptorPool.get(0),
+                    uniformBufferOffsetAlignment(physicalDevice, stack), true);
             long ownedSurface = surface;
             surface = 0L;
             VulkanPresentationTarget target = result.createPresentationTarget(surfaceFactory, ownedSurface);
@@ -341,6 +357,16 @@ public final class VulkanDevice implements GraphicsDevice {
             if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0) return i;
         }
         throw new IllegalStateException("no queue family supports graphics");
+    }
+
+    private static long uniformBufferOffsetAlignment(VkPhysicalDevice physicalDevice, MemoryStack stack) {
+        VkPhysicalDeviceProperties properties = VkPhysicalDeviceProperties.malloc(stack);
+        vkGetPhysicalDeviceProperties(physicalDevice, properties);
+        long alignment = properties.limits().minUniformBufferOffsetAlignment();
+        if (alignment <= 0) {
+            throw new IllegalStateException("Vulkan reported an invalid uniform-buffer offset alignment");
+        }
+        return alignment;
     }
 
 
@@ -1260,6 +1286,7 @@ public final class VulkanDevice implements GraphicsDevice {
                     case UNIFORM_BUFFER -> {
                         BufferBinding range = (BufferBinding) value;
                         VulkanBuffer buffer = owned(range.buffer(), VulkanBuffer.class, "bound buffer");
+                        VulkanValidation.validateUniformOffset(range.offset(), uniformBufferOffsetAlignment);
                         dependencies.add(buffer);
                         VkDescriptorBufferInfo.Buffer bufferInfo = VkDescriptorBufferInfo.calloc(1, stack);
                         bufferInfo.get(0).buffer(buffer.handle).offset(range.offset()).range(range.size());

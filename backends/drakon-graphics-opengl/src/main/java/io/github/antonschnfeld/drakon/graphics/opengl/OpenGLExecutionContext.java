@@ -17,6 +17,7 @@ final class OpenGLExecutionContext {
     IndexType indexType;
     long indexOffset;
     final Map<Integer, VertexBufferBinding> vertexBuffers = new java.util.HashMap<>();
+    final Map<Integer, OpenGLBindingSet> bindingSets = new java.util.HashMap<>();
 
     OpenGLExecutionContext(OpenGLDevice device) {
         this.device = device;

@@ -117,11 +117,17 @@ public final class BackendSpikeMain {
 
     private static void runOpenGL() {
         OpenGLBackend backend = new OpenGLBackend();
+        if (backend.isSupported()) {
+            throw new AssertionError("OpenGL backend reported support without an externally current context");
+        }
         try (GlfwPlatform platform = new GlfwPlatform();
                 GlfwWindow window = platform.createOpenGLWindow(
                         800, 500, "drakon-graphics OpenGL spike")) {
             window.makeContextCurrent();
             window.disableSwapInterval();
+            if (!backend.isSupported()) {
+                throw new AssertionError("OpenGL backend did not recognize the current OpenGL 4.3 context");
+            }
             try (OpenGLDevice device = backend.createDevice(GraphicsDeviceConfig.debug());
                     GlfwOpenGLRenderTarget target = new GlfwOpenGLRenderTarget(device, window)) {
                 try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
@@ -139,6 +145,7 @@ public final class BackendSpikeMain {
                             Shader fragment = device.createShader(new ShaderDescriptor(
                                     ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_FRAGMENT_GLSL)));
                             TexturedMesh mesh = createTexturedMesh(device, target, vertex, fragment)) {
+                        verifyInactiveOpenGLBindingTolerance(device, target, vertex);
                         runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
                     }
                 }
@@ -148,6 +155,9 @@ public final class BackendSpikeMain {
 
     private static void runVulkan() {
         VulkanBackend backend = new VulkanBackend();
+        if (!backend.isSupported()) {
+            throw new AssertionError("Vulkan backend cannot create its headless Vulkan 1.3 device");
+        }
         try (GlfwPlatform platform = new GlfwPlatform();
                 GlfwWindow window = platform.createVulkanWindow(
                         800, 500, "drakon-graphics Vulkan spike")) {
@@ -177,6 +187,31 @@ public final class BackendSpikeMain {
                     }
                 }
             }
+        }
+    }
+
+    private static void verifyInactiveOpenGLBindingTolerance(
+            GraphicsDevice device, RenderTarget target, Shader vertex) {
+        String source = """
+                #version 430
+                uniform sampler2D optimizedAway;
+                layout(location = 0) out vec4 outColor;
+                void main() {
+                    outColor = vec4(1.0);
+                }
+                """;
+        Binding<TextureBinding> inactive = Binding.sampledTexture(
+                "optimizedAway", 0, ShaderStage.FRAGMENT);
+        BindingLayout layout = BindingLayout.of(inactive);
+        try (Shader fragment = device.createShader(new ShaderDescriptor(
+                ShaderStage.FRAGMENT, "main", new GlslShaderCode(source)));
+                GraphicsState ignored = device.createGraphicsState(GraphicsStateDescriptor.builder()
+                        .vertexShader(vertex)
+                        .fragmentShader(fragment)
+                        .bindingLayout(layout)
+                        .colorFormat(target.colorFormats().get(0))
+                        .build())) {
+            if (ignored == null) throw new AssertionError("inactive OpenGL binding state was not created");
         }
     }
 

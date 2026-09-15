@@ -78,7 +78,10 @@ public final class Binding<T> {
      * <p>Backends whose native binding model is not set/group based may use
      * this name to associate the logical binding with a reflected shader
      * resource. Authoring/compiler layers should therefore preserve it as a
-     * stable resource identifier rather than treating it as debug-only text.</p>
+     * stable resource identifier rather than treating it as debug-only text.
+     * Absence from a linked shader's active-resource interface does not by
+     * itself make the binding invalid because a native linker may have removed
+     * an otherwise valid but unused declaration.</p>
      *
      * @return stable shader resource name */
     public String name() {

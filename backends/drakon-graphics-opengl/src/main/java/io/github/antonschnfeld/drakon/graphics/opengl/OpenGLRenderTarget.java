@@ -35,6 +35,11 @@ final class OpenGLRenderTarget extends OpenGLResource implements OpenGLRenderTar
     List<OpenGLTexture> colors() { return colors; }
     OpenGLTexture depth() { return depth; }
 
+    void requireAttachmentsAlive() {
+        for (OpenGLTexture color : colors) color.requireAlive();
+        if (depth != null) depth.requireAlive();
+    }
+
     @Override public OpenGLDevice device() { return device; }
     @Override public int framebuffer() { requireAlive(); return framebuffer; }
 

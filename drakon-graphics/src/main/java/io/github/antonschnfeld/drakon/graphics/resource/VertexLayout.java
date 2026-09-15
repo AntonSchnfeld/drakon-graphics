@@ -48,7 +48,7 @@ public record VertexLayout(List<VertexBinding> bindings, List<VertexAttribute> a
             if (binding == null) {
                 throw new IllegalArgumentException("attribute references missing binding " + attribute.binding());
             }
-            if (attribute.offset() + attribute.format().bytes() > binding.stride()) {
+            if ((long) attribute.offset() + attribute.format().bytes() > binding.stride()) {
                 throw new IllegalArgumentException(
                         "attribute at location " + attribute.location() + " exceeds binding " + binding.binding() + " stride");
             }
