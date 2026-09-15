@@ -26,7 +26,7 @@ abstract class OpenGLResource implements GpuResource {
         if (!closed) {
             closed = true;
             if (!device.isClosed()) {
-                device.makeCurrent();
+                device.activateCapabilities();
                 deleteNative();
             }
         }

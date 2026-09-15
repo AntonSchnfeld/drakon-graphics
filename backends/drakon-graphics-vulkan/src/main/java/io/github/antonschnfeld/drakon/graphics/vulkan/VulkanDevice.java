@@ -26,8 +26,6 @@ import java.util.Objects;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK13.*;
-import static org.lwjgl.glfw.GLFW.*;
-import static org.lwjgl.glfw.GLFWVulkan.*;
 import static org.lwjgl.vulkan.KHRSurface.*;
 import static org.lwjgl.vulkan.KHRSwapchain.*;
 
@@ -47,8 +45,6 @@ import static org.lwjgl.vulkan.KHRSwapchain.*;
  * spike findings instead of being hidden behind backend magic.</p>
  */
 public final class VulkanDevice implements GraphicsDevice {
-    private static final Object GLFW_LOCK = new Object();
-    private static int glfwUsers;
     private final GraphicsDeviceConfig config;
     private final VkInstance instance;
     private final VkPhysicalDevice physicalDevice;
@@ -57,29 +53,12 @@ public final class VulkanDevice implements GraphicsDevice {
     private final VkQueue queue;
     private final long commandPool;
     private final long descriptorPool;
+    private final boolean presentationEnabled;
     private final VulkanShaderTarget shaderTarget = new VulkanShaderTarget(1, 3, 1, 6);
     private final List<VulkanResource> resources = new ArrayList<>();
     private final IdentityHashMap<BindingLayout, VulkanDescriptorLayout> descriptorLayouts = new IdentityHashMap<>();
-    private long window;
-    private long surface;
-    private long swapchain;
-    private long[] swapchainImages = new long[0];
-    private long[] swapchainViews = new long[0];
-    private boolean[] swapchainInitialized = new boolean[0];
-    private int swapchainWidth;
-    private int swapchainHeight;
-    private int swapchainVkFormat;
-    private TextureFormat swapchainFormat;
-    private VulkanPresentationTarget presentationTarget;
-    private FrameSync[] frames = new FrameSync[0];
-    private int frameSlot;
-    private int imageIndex = -1;
-    private long acquisitionSerial;
-    private long currentAcquisition;
-    private boolean imageAcquired;
     private final ArrayList<VkCommandBuffer> deferredCommandBuffers = new ArrayList<>();
     private final ArrayList<VulkanResource> deferredResources = new ArrayList<>();
-    private boolean glfwOwned;
     private boolean closed;
 
     private VulkanDevice(
@@ -90,7 +69,8 @@ public final class VulkanDevice implements GraphicsDevice {
             int queueFamily,
             VkQueue queue,
             long commandPool,
-            long descriptorPool) {
+            long descriptorPool,
+            boolean presentationEnabled) {
         this.config = config;
         this.instance = instance;
         this.physicalDevice = physicalDevice;
@@ -99,6 +79,7 @@ public final class VulkanDevice implements GraphicsDevice {
         this.queue = queue;
         this.commandPool = commandPool;
         this.descriptorPool = descriptorPool;
+        this.presentationEnabled = presentationEnabled;
     }
 
     /** Creates a headless Vulkan 1.3 device with graphics support. */
@@ -178,7 +159,8 @@ public final class VulkanDevice implements GraphicsDevice {
                         queueFamily,
                         queue,
                         pCommandPool.get(0),
-                        pDescriptorPool.get(0));
+                        pDescriptorPool.get(0),
+                        false);
             } catch (RuntimeException | Error failure) {
                 vkDestroyInstance(instance, null);
                 throw failure;
@@ -187,38 +169,26 @@ public final class VulkanDevice implements GraphicsDevice {
     }
 
 
-    /**
-     * Creates a visible GLFW/Vulkan device whose swapchain is exposed through
-     * one stable presentation-backed {@link RenderTarget} facade.
-     */
-    static VulkanDevice createWindowed(
+    /** Creates a presentation-capable device and its first surface-backed target. */
+    static VulkanPresentation createPresentation(
             GraphicsDeviceConfig config,
-            int width,
-            int height,
-            String title) {
+            VulkanSurfaceFactory surfaceFactory) {
         Objects.requireNonNull(config, "config");
-        Objects.requireNonNull(title, "title");
-        if (width <= 0 || height <= 0) throw new IllegalArgumentException("window dimensions must be > 0");
-        acquireGlfw();
-        long window = 0L;
+        Objects.requireNonNull(surfaceFactory, "surfaceFactory");
         VkInstance instance = null;
+        VulkanDevice result = null;
         long surface = 0L;
         try (MemoryStack stack = stackPush()) {
-            glfwDefaultWindowHints();
-            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-            glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
-            window = glfwCreateWindow(width, height, title, 0L, 0L);
-            if (window == 0L) throw new IllegalStateException("GLFW could not create a Vulkan window");
-            if (!glfwVulkanSupported()) throw new IllegalStateException("GLFW reports Vulkan is unavailable");
-
-            PointerBuffer requiredExtensions = glfwGetRequiredInstanceExtensions();
-            if (requiredExtensions == null) {
-                throw new IllegalStateException("GLFW did not provide required Vulkan instance extensions");
+            List<String> extensionNames = List.copyOf(surfaceFactory.requiredInstanceExtensions());
+            PointerBuffer requiredExtensions = stack.mallocPointer(extensionNames.size());
+            for (String extension : extensionNames) {
+                requiredExtensions.put(stack.UTF8(Objects.requireNonNull(extension, "instance extension")));
             }
+            requiredExtensions.flip();
 
             VkApplicationInfo app = VkApplicationInfo.calloc(stack)
                     .sType$Default()
-                    .pApplicationName(stack.UTF8("drakon-graphics backend spike"))
+                    .pApplicationName(stack.UTF8("drakon-graphics"))
                     .applicationVersion(VK_MAKE_VERSION(0, 1, 0))
                     .pEngineName(stack.UTF8("drakon-graphics"))
                     .engineVersion(VK_MAKE_VERSION(0, 1, 0))
@@ -228,88 +198,59 @@ public final class VulkanDevice implements GraphicsDevice {
                     .pApplicationInfo(app)
                     .ppEnabledExtensionNames(requiredExtensions);
             PointerBuffer pInstance = stack.mallocPointer(1);
-            check(vkCreateInstance(instanceInfo, null, pInstance), "vkCreateInstance(windowed)");
+            check(vkCreateInstance(instanceInfo, null, pInstance), "vkCreateInstance(presentation)");
             instance = new VkInstance(pInstance.get(0), instanceInfo);
 
-            LongBuffer pSurface = stack.mallocLong(1);
-            check(glfwCreateWindowSurface(instance, window, null, pSurface), "glfwCreateWindowSurface");
-            surface = pSurface.get(0);
+            surface = surfaceFactory.createSurface(instance.address());
+            if (surface == 0L) throw new IllegalStateException("surface factory returned a null Vulkan surface");
 
             VkPhysicalDevice physicalDevice = pickPhysicalDevice(instance, surface, stack);
             int queueFamily = pickQueueFamily(physicalDevice, surface, stack);
-
             VkDeviceQueueCreateInfo.Buffer queueInfo = VkDeviceQueueCreateInfo.calloc(1, stack);
-            queueInfo.get(0)
-                    .sType$Default()
-                    .queueFamilyIndex(queueFamily)
-                    .pQueuePriorities(stack.floats(1.0f));
+            queueInfo.get(0).sType$Default().queueFamilyIndex(queueFamily).pQueuePriorities(stack.floats(1.0f));
             VkPhysicalDeviceVulkan13Features v13 = VkPhysicalDeviceVulkan13Features.calloc(stack)
-                    .sType$Default()
-                    .dynamicRendering(true)
-                    .synchronization2(true);
-            PointerBuffer deviceExtensions = stack.pointers(stack.UTF8(VK_KHR_SWAPCHAIN_EXTENSION_NAME));
+                    .sType$Default().dynamicRendering(true).synchronization2(true);
             VkDeviceCreateInfo deviceInfo = VkDeviceCreateInfo.calloc(stack)
                     .sType$Default()
                     .pNext(v13.address())
                     .pQueueCreateInfos(queueInfo)
-                    .ppEnabledExtensionNames(deviceExtensions);
+                    .ppEnabledExtensionNames(stack.pointers(stack.UTF8(VK_KHR_SWAPCHAIN_EXTENSION_NAME)));
             PointerBuffer pDevice = stack.mallocPointer(1);
-            check(vkCreateDevice(physicalDevice, deviceInfo, null, pDevice), "vkCreateDevice(windowed)");
+            check(vkCreateDevice(physicalDevice, deviceInfo, null, pDevice), "vkCreateDevice(presentation)");
             VkDevice device = new VkDevice(pDevice.get(0), physicalDevice, deviceInfo);
 
             PointerBuffer pQueue = stack.mallocPointer(1);
             vkGetDeviceQueue(device, queueFamily, 0, pQueue);
             VkQueue queue = new VkQueue(pQueue.get(0), device);
-
             VkCommandPoolCreateInfo commandPoolInfo = VkCommandPoolCreateInfo.calloc(stack)
-                    .sType$Default()
-                    .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
+                    .sType$Default().flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
                     .queueFamilyIndex(queueFamily);
             LongBuffer pCommandPool = stack.mallocLong(1);
             check(vkCreateCommandPool(device, commandPoolInfo, null, pCommandPool), "vkCreateCommandPool");
-
             VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
             sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1024);
             sizes.get(1).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1024);
             VkDescriptorPoolCreateInfo descriptorPoolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
-                    .sType$Default()
-                    .flags(VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)
-                    .maxSets(1024)
-                    .pPoolSizes(sizes);
+                    .sType$Default().flags(VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)
+                    .maxSets(1024).pPoolSizes(sizes);
             LongBuffer pDescriptorPool = stack.mallocLong(1);
             check(vkCreateDescriptorPool(device, descriptorPoolInfo, null, pDescriptorPool), "vkCreateDescriptorPool");
 
-            VulkanDevice result = new VulkanDevice(
+            result = new VulkanDevice(
                     config, instance, physicalDevice, device, queueFamily, queue,
-                    pCommandPool.get(0), pDescriptorPool.get(0));
-            result.window = window;
-            result.surface = surface;
-            result.glfwOwned = true;
-            result.createSwapchain(0L);
-            result.createFrameSync(2);
-            result.presentationTarget = result.track(new VulkanPresentationTarget(result, result.swapchainFormat));
-            return result;
+                    pCommandPool.get(0), pDescriptorPool.get(0), true);
+            long ownedSurface = surface;
+            surface = 0L;
+            VulkanPresentationTarget target = result.createPresentationTarget(surfaceFactory, ownedSurface);
+            return new VulkanPresentation(result, target);
         } catch (RuntimeException | Error failure) {
+            if (result != null) {
+                result.close();
+                instance = null;
+            }
             if (surface != 0L && instance != null) vkDestroySurfaceKHR(instance, surface, null);
             if (instance != null) vkDestroyInstance(instance, null);
-            if (window != 0L) glfwDestroyWindow(window);
-            releaseGlfw();
             throw failure;
-        }
-    }
-
-    private static void acquireGlfw() {
-        synchronized (GLFW_LOCK) {
-            if (glfwUsers == 0 && !glfwInit()) throw new IllegalStateException("GLFW initialization failed");
-            glfwUsers++;
-        }
-    }
-
-    private static void releaseGlfw() {
-        synchronized (GLFW_LOCK) {
-            if (glfwUsers <= 0) return;
-            glfwUsers--;
-            if (glfwUsers == 0) glfwTerminate();
         }
     }
 
@@ -403,41 +344,53 @@ public final class VulkanDevice implements GraphicsDevice {
     }
 
 
-    /** Returns the GLFW window handle for the backend spike. */
-    public long windowHandle() {
+    /**
+     * Creates another presentation target for this presentation-enabled device.
+     * The selected queue family must support the newly created surface and the
+     * instance must already have all extensions required by the factory.
+     *
+     * @param surfaceFactory external surface and extent integration
+     * @return a new independently presentable render target
+     */
+    public RenderTarget createPresentationTarget(VulkanSurfaceFactory surfaceFactory) {
+        Objects.requireNonNull(surfaceFactory, "surfaceFactory");
         requireOpen();
-        if (window == 0L) throw new IllegalStateException("this Vulkan device is headless");
-        return window;
+        if (!presentationEnabled) {
+            throw new IllegalStateException("headless devices cannot add presentation targets");
+        }
+        long surface = surfaceFactory.createSurface(instance.address());
+        if (surface == 0L) throw new IllegalStateException("surface factory returned a null Vulkan surface");
+        return createPresentationTarget(surfaceFactory, surface);
     }
 
-    /** Returns the stable swapchain-backed render-target facade. */
-    public RenderTarget defaultRenderTarget() {
-        requireOpen();
-        if (presentationTarget == null) throw new IllegalStateException("this Vulkan device is headless");
-        return presentationTarget;
+    private VulkanPresentationTarget createPresentationTarget(
+            VulkanSurfaceFactory surfaceFactory,
+            long surface) {
+        VulkanPresentationTarget target = new VulkanPresentationTarget(this, surfaceFactory, surface);
+        try {
+            try (MemoryStack stack = stackPush()) {
+                IntBuffer supported = stack.mallocInt(1);
+                check(vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamily, surface, supported),
+                        "vkGetPhysicalDeviceSurfaceSupportKHR");
+                if (supported.get(0) != VK_TRUE) {
+                    throw new IllegalArgumentException("selected queue family cannot present to this surface");
+                }
+            }
+            createSwapchain(target, 0L);
+            createFrameSync(target, 2);
+            return track(target);
+        } catch (RuntimeException | Error failure) {
+            destroyPresentationTarget(target);
+            throw failure;
+        }
     }
 
-    /** Returns whether the spike-created GLFW window requested closure. */
-    public boolean shouldClose() {
+    long presentationColorView(VulkanPresentationTarget target, int index) {
         requireOpen();
-        if (window == 0L) return false;
-        return glfwWindowShouldClose(window);
-    }
-
-    /** Polls GLFW events. */
-    public void pollEvents() {
-        requireOpen();
-        if (window != 0L) glfwPollEvents();
-    }
-
-    int presentationWidth() { requireOpen(); return swapchainWidth; }
-    int presentationHeight() { requireOpen(); return swapchainHeight; }
-
-    long presentationColorView(int index) {
-        requireOpen();
-        if (!imageAcquired) throw new IllegalStateException("no swapchain image is currently acquired");
+        target.requireAlive();
+        if (!target.imageAcquired) throw new IllegalStateException("no swapchain image is currently acquired");
         if (index != 0) throw new IndexOutOfBoundsException("presentation target has one color attachment");
-        return swapchainViews[imageIndex];
+        return target.swapchainViews[target.imageIndex];
     }
 
     /**
@@ -451,14 +404,16 @@ public final class VulkanDevice implements GraphicsDevice {
             VulkanPresentationTarget target,
             VulkanPresentationState recordingState) {
         requireOpen();
-        ensurePresentationAcquired();
+        target.requireAlive();
+        ensurePresentationAcquired(target);
         VulkanPresentationState state = recordingState;
         if (state == null) {
             state = new VulkanPresentationState(
-                    target, currentAcquisition, imageIndex, swapchainInitialized[imageIndex]);
+                    target, target.currentAcquisition, target.imageIndex,
+                    target.swapchainInitialized[target.imageIndex]);
         } else if (state.target != target
-                || state.acquisition != currentAcquisition
-                || state.imageIndex != imageIndex) {
+                || state.acquisition != target.currentAcquisition
+                || state.imageIndex != target.imageIndex) {
             throw new IllegalStateException("presentation acquisition changed while recording command list");
         }
         try (MemoryStack stack = stackPush()) {
@@ -478,7 +433,7 @@ public final class VulkanDevice implements GraphicsDevice {
                     .newLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
                     .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                    .image(swapchainImages[imageIndex])
+                    .image(target.swapchainImages[target.imageIndex])
                     .subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
                             .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
             VkDependencyInfo dependency = VkDependencyInfo.calloc(stack)
@@ -488,12 +443,17 @@ public final class VulkanDevice implements GraphicsDevice {
         return state;
     }
 
-    void finishPresentationImage(VkCommandBuffer commandBuffer, VulkanPresentationState state) {
+    void finishPresentationImage(
+            VulkanPresentationTarget target,
+            VkCommandBuffer commandBuffer,
+            VulkanPresentationState state) {
         requireOpen();
-        if (!imageAcquired) throw new IllegalStateException("no swapchain image is acquired");
+        target.requireAlive();
+        if (!target.imageAcquired) throw new IllegalStateException("no swapchain image is acquired");
         if (state == null
-                || state.acquisition != currentAcquisition
-                || state.imageIndex != imageIndex) {
+                || state.target != target
+                || state.acquisition != target.currentAcquisition
+                || state.imageIndex != target.imageIndex) {
             throw new IllegalStateException("presentation acquisition changed while recording command list");
         }
         try (MemoryStack stack = stackPush()) {
@@ -508,7 +468,7 @@ public final class VulkanDevice implements GraphicsDevice {
                     .newLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
                     .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                    .image(swapchainImages[imageIndex])
+                    .image(target.swapchainImages[target.imageIndex])
                     .subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
                             .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
             VkDependencyInfo dependency = VkDependencyInfo.calloc(stack)
@@ -518,24 +478,25 @@ public final class VulkanDevice implements GraphicsDevice {
         state.markInitialized();
     }
 
-    private void ensurePresentationAcquired() {
-        if (imageAcquired) return;
-        if (presentationTarget == null) throw new IllegalStateException("device has no presentation target");
-        FrameSync frame = frames[frameSlot];
+    private void ensurePresentationAcquired(VulkanPresentationTarget target) {
+        if (target.imageAcquired) return;
+        FrameSync frame = target.frames[target.frameSlot];
         retireFrame(frame);
 
         while (true) {
             try (MemoryStack stack = stackPush()) {
                 IntBuffer pImage = stack.mallocInt(1);
-                int result = vkAcquireNextImageKHR(device, swapchain, Long.MAX_VALUE, frame.imageAvailable, VK_NULL_HANDLE, pImage);
+                int result = vkAcquireNextImageKHR(
+                        device, target.swapchain, Long.MAX_VALUE,
+                        frame.imageAvailable, VK_NULL_HANDLE, pImage);
                 if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-                    recreateSwapchain();
+                    recreateSwapchain(target);
                     continue;
                 }
                 if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) check(result, "vkAcquireNextImageKHR");
-                imageIndex = pImage.get(0);
-                currentAcquisition = ++acquisitionSerial;
-                imageAcquired = true;
+                target.imageIndex = pImage.get(0);
+                target.currentAcquisition = ++target.acquisitionSerial;
+                target.imageAcquired = true;
                 return;
             }
         }
@@ -551,13 +512,15 @@ public final class VulkanDevice implements GraphicsDevice {
 
     private void reclaimFrame(FrameSync frame) {
         freeCommandBuffers(frame.commandBuffers);
-        releaseResources(frame.resources);
+        List<VulkanResource> retained = new ArrayList<>(frame.resources);
+        frame.resources.clear();
         frame.inFlight = false;
         frame.presentationSubmitted = false;
+        releaseResources(retained);
     }
 
-    private void createFrameSync(int count) {
-        frames = new FrameSync[count];
+    private void createFrameSync(VulkanPresentationTarget target, int count) {
+        target.frames = new FrameSync[count];
         try (MemoryStack stack = stackPush()) {
             VkSemaphoreCreateInfo semaphoreInfo = VkSemaphoreCreateInfo.calloc(stack).sType$Default();
             VkFenceCreateInfo fenceInfo = VkFenceCreateInfo.calloc(stack)
@@ -570,7 +533,7 @@ public final class VulkanDevice implements GraphicsDevice {
                 try {
                     check(vkCreateSemaphore(device, semaphoreInfo, null, pFinished), "vkCreateSemaphore(renderFinished)");
                     check(vkCreateFence(device, fenceInfo, null, pFence), "vkCreateFence(frame)");
-                    frames[i] = new FrameSync(pAvailable.get(0), pFinished.get(0), pFence.get(0));
+                    target.frames[i] = new FrameSync(pAvailable.get(0), pFinished.get(0), pFence.get(0));
                 } catch (RuntimeException | Error failure) {
                     vkDestroySemaphore(device, pAvailable.get(0), null);
                     if (pFinished.get(0) != 0L) vkDestroySemaphore(device, pFinished.get(0), null);
@@ -580,18 +543,18 @@ public final class VulkanDevice implements GraphicsDevice {
         }
     }
 
-    private void createSwapchain(long oldSwapchain) {
+    private void createSwapchain(VulkanPresentationTarget target, long oldSwapchain) {
         try (MemoryStack stack = stackPush()) {
             VkSurfaceCapabilitiesKHR capabilities = VkSurfaceCapabilitiesKHR.malloc(stack);
-            check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, capabilities),
+            check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, target.surface, capabilities),
                     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
 
             IntBuffer formatCount = stack.mallocInt(1);
-            check(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, formatCount, null),
+            check(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, target.surface, formatCount, null),
                     "vkGetPhysicalDeviceSurfaceFormatsKHR(count)");
             if (formatCount.get(0) == 0) throw new IllegalStateException("surface exposes no formats");
             VkSurfaceFormatKHR.Buffer formats = VkSurfaceFormatKHR.malloc(formatCount.get(0), stack);
-            check(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, formatCount, formats),
+            check(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, target.surface, formatCount, formats),
                     "vkGetPhysicalDeviceSurfaceFormatsKHR");
             VkSurfaceFormatKHR chosen = chooseSurfaceFormat(formats);
 
@@ -601,11 +564,10 @@ public final class VulkanDevice implements GraphicsDevice {
                 width = capabilities.currentExtent().width();
                 height = capabilities.currentExtent().height();
             } else {
-                IntBuffer pWidth = stack.mallocInt(1);
-                IntBuffer pHeight = stack.mallocInt(1);
-                glfwGetFramebufferSize(window, pWidth, pHeight);
-                width = clamp(Math.max(pWidth.get(0), 1), capabilities.minImageExtent().width(), capabilities.maxImageExtent().width());
-                height = clamp(Math.max(pHeight.get(0), 1), capabilities.minImageExtent().height(), capabilities.maxImageExtent().height());
+                width = clamp(Math.max(target.surfaceFactory.width(), 1),
+                        capabilities.minImageExtent().width(), capabilities.maxImageExtent().width());
+                height = clamp(Math.max(target.surfaceFactory.height(), 1),
+                        capabilities.minImageExtent().height(), capabilities.maxImageExtent().height());
             }
 
             int imageCount = capabilities.minImageCount() + 1;
@@ -613,7 +575,7 @@ public final class VulkanDevice implements GraphicsDevice {
 
             VkSwapchainCreateInfoKHR info = VkSwapchainCreateInfoKHR.calloc(stack)
                     .sType$Default()
-                    .surface(surface)
+                    .surface(target.surface)
                     .minImageCount(imageCount)
                     .imageFormat(chosen.format())
                     .imageColorSpace(chosen.colorSpace())
@@ -650,16 +612,15 @@ public final class VulkanDevice implements GraphicsDevice {
                 newViews[i] = pView.get(0);
             }
 
-            destroySwapchainViews();
+            destroySwapchainViews(target);
             if (oldSwapchain != 0L) vkDestroySwapchainKHR(device, oldSwapchain, null);
-            swapchain = newSwapchain;
-            swapchainImages = newImages;
-            swapchainViews = newViews;
-            swapchainInitialized = new boolean[newImages.length];
-            swapchainWidth = width;
-            swapchainHeight = height;
-            swapchainVkFormat = chosen.format();
-            swapchainFormat = switch (chosen.format()) {
+            target.swapchain = newSwapchain;
+            target.swapchainImages = newImages;
+            target.swapchainViews = newViews;
+            target.swapchainInitialized = new boolean[newImages.length];
+            target.swapchainWidth = width;
+            target.swapchainHeight = height;
+            target.colorFormat = switch (chosen.format()) {
                 case VK_FORMAT_B8G8R8A8_UNORM -> TextureFormat.BGRA8_UNORM;
                 case VK_FORMAT_R8G8B8A8_UNORM -> TextureFormat.RGBA8_UNORM;
                 default -> throw new IllegalStateException("chosen swapchain format lacks portable TextureFormat mapping");
@@ -667,16 +628,17 @@ public final class VulkanDevice implements GraphicsDevice {
         }
     }
 
-    private void recreateSwapchain() {
+    private void recreateSwapchain(VulkanPresentationTarget target) {
         check(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(recreate swapchain)");
-        for (FrameSync frame : frames) if (frame != null) reclaimFrame(frame);
+        for (FrameSync frame : target.frames) if (frame != null) reclaimFrame(frame);
         reclaimDeferredSubmissions();
-        imageAcquired = false;
-        imageIndex = -1;
-        currentAcquisition = 0L;
-        long old = swapchain;
-        createSwapchain(old);
-        if (presentationTarget != null && !presentationTarget.colorFormats().equals(List.of(swapchainFormat))) {
+        target.imageAcquired = false;
+        target.imageIndex = -1;
+        target.currentAcquisition = 0L;
+        long old = target.swapchain;
+        TextureFormat oldFormat = target.colorFormat;
+        createSwapchain(target, old);
+        if (oldFormat != target.colorFormat) {
             throw new IllegalStateException("swapchain recreation changed format; stable RenderTarget format contract cannot be preserved");
         }
     }
@@ -708,11 +670,30 @@ public final class VulkanDevice implements GraphicsDevice {
         return Math.max(min, Math.min(value, max));
     }
 
-    private void destroySwapchainViews() {
-        for (long view : swapchainViews) if (view != 0L) vkDestroyImageView(device, view, null);
-        swapchainViews = new long[0];
-        swapchainImages = new long[0];
-        swapchainInitialized = new boolean[0];
+    private void destroySwapchainViews(VulkanPresentationTarget target) {
+        for (long view : target.swapchainViews) if (view != 0L) vkDestroyImageView(device, view, null);
+        target.swapchainViews = new long[0];
+        target.swapchainImages = new long[0];
+        target.swapchainInitialized = new boolean[0];
+    }
+
+    void destroyPresentationTarget(VulkanPresentationTarget target) {
+        if (closed) return;
+        check(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(close presentation target)");
+        for (FrameSync frame : target.frames) {
+            if (frame == null) continue;
+            reclaimFrame(frame);
+            vkDestroySemaphore(device, frame.imageAvailable, null);
+            vkDestroySemaphore(device, frame.renderFinished, null);
+            vkDestroyFence(device, frame.fence, null);
+        }
+        target.frames = new FrameSync[0];
+        destroySwapchainViews(target);
+        if (target.swapchain != 0L) {
+            vkDestroySwapchainKHR(device, target.swapchain, null);
+            target.swapchain = 0L;
+        }
+        vkDestroySurfaceKHR(instance, target.surface, null);
     }
 
     void requireOpen() {
@@ -1311,11 +1292,13 @@ public final class VulkanDevice implements GraphicsDevice {
     public void present(RenderTarget target) {
         Objects.requireNonNull(target, "target");
         VulkanTarget vkTarget = owned(target, VulkanTarget.class, "render target");
-        if (!(vkTarget instanceof VulkanPresentationTarget presentation) || presentation != presentationTarget) {
-            throw new IllegalArgumentException("render target is not this device's presentation target");
+        if (!(vkTarget instanceof VulkanPresentationTarget presentation)) {
+            throw new IllegalArgumentException("render target has no Vulkan presentation integration");
         }
-        if (!imageAcquired) throw new IllegalStateException("presentation target has no acquired image");
-        FrameSync frame = frames[frameSlot];
+        if (!presentation.imageAcquired) {
+            throw new IllegalStateException("presentation target has no acquired image");
+        }
+        FrameSync frame = presentation.frames[presentation.frameSlot];
         if (!frame.presentationSubmitted) {
             throw new IllegalStateException("presentation target has not been submitted for this frame");
         }
@@ -1337,15 +1320,15 @@ public final class VulkanDevice implements GraphicsDevice {
                     .pWaitSemaphores(stack.longs(frame.renderFinished))
                     // LWJGL cannot infer a count shared by multiple arrays.
                     .swapchainCount(1)
-                    .pSwapchains(stack.longs(swapchain))
-                    .pImageIndices(stack.ints(imageIndex));
+                    .pSwapchains(stack.longs(presentation.swapchain))
+                    .pImageIndices(stack.ints(presentation.imageIndex));
             int result = vkQueuePresentKHR(queue, info);
-            imageAcquired = false;
-            imageIndex = -1;
-            currentAcquisition = 0L;
-            frameSlot = (frameSlot + 1) % frames.length;
+            presentation.imageAcquired = false;
+            presentation.imageIndex = -1;
+            presentation.currentAcquisition = 0L;
+            presentation.frameSlot = (presentation.frameSlot + 1) % presentation.frames.length;
             if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-                recreateSwapchain();
+                recreateSwapchain(presentation);
             } else {
                 check(result, "vkQueuePresentKHR");
             }
@@ -1411,7 +1394,8 @@ public final class VulkanDevice implements GraphicsDevice {
                     .pCommandBuffers(stack.pointers(list.commandBuffer.address()));
 
             if (list.presentationState != null) {
-                FrameSync frame = frames[frameSlot];
+                VulkanPresentationTarget presentation = list.presentationState.target;
+                FrameSync frame = presentation.frames[presentation.frameSlot];
                 frame.commandBuffers.ensureCapacity(frame.commandBuffers.size() + 1);
                 frame.resources.ensureCapacity(frame.resources.size() + retained.size());
                 // Only the first submission that touches an acquired swapchain
@@ -1463,16 +1447,17 @@ public final class VulkanDevice implements GraphicsDevice {
 
     private void validatePresentationState(VulkanPresentationState state) {
         if (state == null) return;
-        if (state.target != presentationTarget
-                || !imageAcquired
-                || state.acquisition != currentAcquisition
-                || state.imageIndex != imageIndex) {
+        VulkanPresentationTarget target = state.target;
+        target.requireAlive();
+        if (!target.imageAcquired
+                || state.acquisition != target.currentAcquisition
+                || state.imageIndex != target.imageIndex) {
             throw new IllegalStateException("presentation command list has no matching acquired swapchain image");
         }
-        if (frames[frameSlot].inFlight) {
+        if (target.frames[target.frameSlot].inFlight) {
             throw new IllegalStateException("current presentation frame slot has already been presented");
         }
-        if (swapchainInitialized[state.imageIndex] != state.expectedInitialized) {
+        if (target.swapchainInitialized[state.imageIndex] != state.expectedInitialized) {
             throw new IllegalStateException("presentation image state changed since command-list recording");
         }
     }
@@ -1483,11 +1468,9 @@ public final class VulkanDevice implements GraphicsDevice {
         // waiting for GPU completion would make subsequent recording stale.
         list.commandState.commitFinalStates();
         if (list.presentationState != null && list.presentationState.recordingInitialized()) {
-            swapchainInitialized[list.presentationState.imageIndex] = true;
+            list.presentationState.target.swapchainInitialized[list.presentationState.imageIndex] = true;
         }
     }
-
-    public String backendName() { requireOpen(); return "LWJGL Vulkan 1.3 spike"; }
 
     void destroyBuffer(long buffer, long memory) {
         vkDestroyBuffer(device, buffer, null);
@@ -1545,9 +1528,12 @@ public final class VulkanDevice implements GraphicsDevice {
     public void close() {
         if (closed) return;
         vkDeviceWaitIdle(device);
-        for (FrameSync frame : frames) {
-            if (frame == null) continue;
-            reclaimFrame(frame);
+        for (VulkanResource resource : List.copyOf(resources)) {
+            if (resource instanceof VulkanPresentationTarget target) {
+                for (FrameSync frame : target.frames.clone()) {
+                    if (frame != null) reclaimFrame(frame);
+                }
+            }
         }
         reclaimDeferredSubmissions();
         for (int i = resources.size() - 1; i >= 0; i--) {
@@ -1556,22 +1542,11 @@ public final class VulkanDevice implements GraphicsDevice {
         for (Map.Entry<BindingLayout, VulkanDescriptorLayout> entry : descriptorLayouts.entrySet()) {
             vkDestroyDescriptorSetLayout(device, entry.getValue().handle, null);
         }
-        for (FrameSync frame : frames) {
-            if (frame == null) continue;
-            vkDestroySemaphore(device, frame.imageAvailable, null);
-            vkDestroySemaphore(device, frame.renderFinished, null);
-            vkDestroyFence(device, frame.fence, null);
-        }
-        destroySwapchainViews();
-        if (swapchain != 0L) vkDestroySwapchainKHR(device, swapchain, null);
         vkDestroyDescriptorPool(device, descriptorPool, null);
         vkDestroyCommandPool(device, commandPool, null);
         closed = true;
         vkDestroyDevice(device, null);
-        if (surface != 0L) vkDestroySurfaceKHR(instance, surface, null);
         vkDestroyInstance(instance, null);
-        if (window != 0L) glfwDestroyWindow(window);
-        if (glfwOwned) releaseGlfw();
     }
 
     static void check(int result, String operation) {
@@ -1579,7 +1554,7 @@ public final class VulkanDevice implements GraphicsDevice {
     }
 
 
-    private static final class FrameSync {
+    static final class FrameSync {
         final long imageAvailable;
         final long renderFinished;
         final long fence;

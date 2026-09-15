@@ -46,28 +46,31 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         requireRecording();
         Objects.requireNonNull(info, "info");
         if (rendering) throw new IllegalStateException("rendering scope is already active");
-        OpenGLRenderTarget target = owned(info.target(), OpenGLRenderTarget.class, "render target");
+        OpenGLRenderTargetAccess target = device.ownedTarget(info.target(), "render target");
         validateAttachmentStates(target);
         rendering = true;
         commands.add(context -> beginRenderingNow(context, target, info));
     }
 
-    private void validateAttachmentStates(OpenGLRenderTarget target) {
-        if (!validation || target.presentable()) return;
-        for (OpenGLTexture color : target.colors()) {
+    private void validateAttachmentStates(OpenGLRenderTargetAccess target) {
+        if (!validation || !(target instanceof OpenGLRenderTarget internal)) return;
+        for (OpenGLTexture color : internal.colors()) {
             if (color.state != ResourceState.COLOR_ATTACHMENT_WRITE) {
                 throw new IllegalStateException("color attachment is not in COLOR_ATTACHMENT_WRITE");
             }
         }
-        if (target.depth() != null && target.depth().state != ResourceState.DEPTH_ATTACHMENT_WRITE) {
+        if (internal.depth() != null && internal.depth().state != ResourceState.DEPTH_ATTACHMENT_WRITE) {
             throw new IllegalStateException("depth attachment is not in DEPTH_ATTACHMENT_WRITE");
         }
     }
 
-    private static void beginRenderingNow(OpenGLExecutionContext context, OpenGLRenderTarget target, RenderingInfo info) {
+    private static void beginRenderingNow(
+            OpenGLExecutionContext context,
+            OpenGLRenderTargetAccess target,
+            RenderingInfo info) {
         context.renderTarget = target;
         context.renderingInfo = info;
-        glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer());
 
         Viewport viewport = info.viewport();
         int viewportY = Math.round(target.height() - (viewport.y() + viewport.height()));
@@ -121,10 +124,10 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         });
     }
 
-    private static void invalidate(OpenGLRenderTarget target, List<Integer> attachments) {
+    private static void invalidate(OpenGLRenderTargetAccess target, List<Integer> attachments) {
         if (attachments.isEmpty()) return;
         int[] nativeAttachments = attachments.stream().mapToInt(Integer::intValue).toArray();
-        if (target.framebuffer == 0) {
+        if (target.framebuffer() == 0) {
             // Default-framebuffer invalidation uses GL_COLOR/GL_DEPTH rather than FBO attachment enums.
             for (int i = 0; i < nativeAttachments.length; i++) {
                 if (nativeAttachments[i] >= GL_COLOR_ATTACHMENT0) nativeAttachments[i] = GL_COLOR;

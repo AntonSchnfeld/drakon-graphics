@@ -211,21 +211,22 @@ public interface GraphicsDevice extends AutoCloseable {
      *
      * <p>Presentation capability is intentionally not represented by a separate
      * public target subtype. Ordinary rendering code only needs {@link RenderTarget};
-     * the backend or window integration that created a presentation-backed target
+     * the backend or external integration that provides a presentation-capable target
      * is responsible for supplying one that this operation accepts.</p>
      *
-     * <p>This operation also deliberately hides backend-owned presentation
-     * mechanics such as Vulkan swapchain image acquisition, image rotation,
-     * presentation synchronization, and internal presentation-state transitions.
-     * Those resources are not exposed as application {@link Texture} objects and
-     * therefore do not participate in the caller-managed resource-state API. The
-     * caller is responsible for submitting any rendering work intended for this
-     * presentation before invoking this method.</p>
+     * <p>This operation deliberately hides backend- or integration-specific
+     * presentation mechanics such as Vulkan swapchain image acquisition, image
+     * rotation, presentation synchronization, buffer swapping, and internal
+     * presentation-state transitions. Presentation-specific resources are not
+     * exposed as application {@link Texture} objects and therefore do not
+     * participate in the caller-managed resource-state API. The caller is
+     * responsible for submitting any rendering work intended for this presentation
+     * before invoking this method.</p>
      *
-     * @param target presentation-backed target owned by this device
+     * @param target presentation-capable target associated with this device
      * @throws NullPointerException if {@code target} is {@code null}
-     * @throws IllegalArgumentException if {@code target} belongs to another device
-     *         or is not presentation-capable
+     * @throws IllegalArgumentException if {@code target} is associated with another
+     *         device or is not presentation-capable
      * @throws IllegalStateException if this device or the target is closed, or if
      *         the target cannot currently be presented
      */

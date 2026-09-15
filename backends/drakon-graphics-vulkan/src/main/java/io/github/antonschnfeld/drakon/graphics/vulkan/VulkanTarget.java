@@ -18,6 +18,4 @@ abstract class VulkanTarget extends VulkanResource implements RenderTarget {
 
     /** Gives presentation targets a chance to transition their backing image for presentation. */
     void finishRendering(VkCommandBuffer commandBuffer, VulkanPresentationState presentationState) {}
-
-    boolean presentable() { return false; }
 }

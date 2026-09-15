@@ -5,20 +5,23 @@ import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDevice;
 import java.util.List;
 
 /**
- * Opaque device-owned destination into which graphics commands can render.
+ * Opaque destination associated with a graphics device into which graphics
+ * commands can render.
  *
  * <p>A render target describes the dimensions and attachment formats required
- * by graphics state and rendering commands, but it deliberately does not expose
- * how those attachments are backed. A target created through
- * {@link GraphicsDevice#createRenderTarget(RenderTargetDescriptor)}
- * references caller-owned textures, while a backend integration may also provide
- * a presentation-backed target whose images are owned and rotated internally by
- * the backend.</p>
+ * by graphics state and rendering commands, but deliberately does not expose
+ * how those attachments are backed. A target may be created and lifetime-owned
+ * by its graphics device, or it may be supplied by an external backend
+ * integration. In either case, it is associated with exactly one graphics
+ * device and may only be used with that device.</p>
  *
- * <p>Closing an offscreen target releases only the backend object grouping its
- * attachments; it does not close caller-owned textures. A presentation-backed
- * implementation may additionally release presentation resources that it owns.
- * The concrete creation mechanism defines which case applies.</p>
+ * <p>A target created through
+ * {@link GraphicsDevice#createRenderTarget(RenderTargetDescriptor)} references
+ * caller-owned textures. Closing that target releases only the backend object
+ * grouping those attachments and does not close the textures. An externally
+ * integrated or presentation-backed target defines the lifetime of resources
+ * owned by that integration; closing the target does not imply ownership of,
+ * or destruction of, an external window, context, or other platform object.</p>
  */
 public interface RenderTarget extends GpuResource {
     /**

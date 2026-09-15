@@ -11,7 +11,7 @@ import java.util.Map;
 final class OpenGLExecutionContext {
     final OpenGLDevice device;
     OpenGLGraphicsState graphicsState;
-    OpenGLRenderTarget renderTarget;
+    OpenGLRenderTargetAccess renderTarget;
     RenderingInfo renderingInfo;
     OpenGLBuffer indexBuffer;
     IndexType indexType;
