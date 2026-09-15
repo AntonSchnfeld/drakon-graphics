@@ -1,6 +1,7 @@
 package io.github.antonschnfeld.drakon.graphics.vulkan;
 
 import io.github.antonschnfeld.drakon.graphics.resource.IndexType;
+import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
 import io.github.antonschnfeld.drakon.graphics.resource.ScissorRect;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexAttribute;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexBinding;
@@ -30,6 +31,14 @@ final class VulkanValidation {
         if (offset % alignment != 0) {
             throw new IllegalArgumentException(
                     "uniform-buffer offset " + offset + " is not aligned to " + alignment + " bytes");
+        }
+    }
+
+    static void validateTransitionFrom(
+            boolean validation, ResourceState actual, ResourceState declared, String resource) {
+        if (validation && actual != declared) {
+            throw new IllegalStateException(
+                    resource + " transition expected " + declared + " but current state is " + actual);
         }
     }
 

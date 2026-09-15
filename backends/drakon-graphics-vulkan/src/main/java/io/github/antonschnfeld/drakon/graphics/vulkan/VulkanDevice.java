@@ -1378,7 +1378,7 @@ public final class VulkanDevice implements GraphicsDevice {
                 VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
                         .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
                 check(vkBeginCommandBuffer(commandBuffer, begin), "vkBeginCommandBuffer");
-                return new VulkanCommandEncoder(this, commandBuffer);
+                return new VulkanCommandEncoder(this, commandBuffer, config.validation());
             } catch (RuntimeException | Error failure) {
                 freeCommandBuffer(commandBuffer);
                 throw failure;

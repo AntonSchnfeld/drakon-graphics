@@ -451,7 +451,7 @@ public final class OpenGLDevice implements GraphicsDevice {
     @Override
     public CommandEncoder createCommandEncoder() {
         requireOpen();
-        return new OpenGLCommandEncoder(this);
+        return new OpenGLCommandEncoder(this, config.validation());
     }
 
     @Override

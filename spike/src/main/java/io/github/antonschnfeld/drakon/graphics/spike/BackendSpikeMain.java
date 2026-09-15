@@ -19,6 +19,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.BindingLayout;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingSet;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingSetDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.Buffer;
+import io.github.antonschnfeld.drakon.graphics.resource.BufferBinding;
 import io.github.antonschnfeld.drakon.graphics.resource.BufferDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.BufferUsage;
 import io.github.antonschnfeld.drakon.graphics.resource.IndexType;
@@ -140,12 +141,14 @@ public final class BackendSpikeMain {
                     verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
                     verifyInitializationSmokeTexture(heapInitializedTexture);
                     verifyInitializationSmokeTexture(directInitializedTexture);
-                    try (Shader vertex = device.createShader(new ShaderDescriptor(
+                        try (Shader vertex = device.createShader(new ShaderDescriptor(
                             ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
                             Shader fragment = device.createShader(new ShaderDescriptor(
                                     ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_FRAGMENT_GLSL)));
                             TexturedMesh mesh = createTexturedMesh(device, target, vertex, fragment)) {
                         verifyInactiveOpenGLBindingTolerance(device, target, vertex);
+                        verifyBindingPersistenceAcrossStateChange(
+                                device, target, vertex, fragment, true);
                         runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
                     }
                 }
@@ -182,6 +185,8 @@ public final class BackendSpikeMain {
                                     ShaderStage.FRAGMENT, "main",
                                     new SpirvShaderCode(compileSpirv(VULKAN_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
                             TexturedMesh mesh = createTexturedMesh(device, target, vertex, fragment)) {
+                        verifyBindingPersistenceAcrossStateChange(
+                                device, target, vertex, fragment, false);
                         runVulkanLifetimeStress(device, target, vertex, fragment);
                         runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
                     }
@@ -213,6 +218,141 @@ public final class BackendSpikeMain {
                         .build())) {
             if (ignored == null) throw new AssertionError("inactive OpenGL binding state was not created");
         }
+    }
+
+    private static void verifyBindingPersistenceAcrossStateChange(
+            GraphicsDevice device,
+            RenderTarget target,
+            Shader vertex,
+            Shader fragment,
+            boolean inspectOpenGLBindings) {
+        Binding<TextureBinding> textureA = Binding.sampledTexture("texturePattern", 0, ShaderStage.FRAGMENT);
+        Binding<BufferBinding> uniformA = Binding.uniformBuffer("uniformA", 1, ShaderStage.VERTEX);
+        Binding<TextureBinding> textureB0 = Binding.sampledTexture("texturePattern", 0, ShaderStage.FRAGMENT);
+        Binding<TextureBinding> textureB1 = Binding.sampledTexture("textureB1", 1, ShaderStage.FRAGMENT);
+        Binding<BufferBinding> uniformB0 = Binding.uniformBuffer("uniformB0", 2, ShaderStage.VERTEX);
+        Binding<BufferBinding> uniformB1 = Binding.uniformBuffer("uniformB1", 3, ShaderStage.VERTEX);
+        Binding<TextureBinding> sharedTexture = Binding.sampledTexture("sharedTexture", 0, ShaderStage.FRAGMENT);
+        Binding<BufferBinding> sharedUniform = Binding.uniformBuffer("sharedUniform", 1, ShaderStage.VERTEX);
+        BindingLayout layoutA = BindingLayout.of(textureA, uniformA);
+        BindingLayout layoutB = BindingLayout.of(textureB0, textureB1, uniformB0, uniformB1);
+        BindingLayout sharedLayout = BindingLayout.of(sharedTexture, sharedUniform);
+
+        try (Buffer bufferA = device.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.UNIFORM)));
+                Buffer bufferB = device.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.UNIFORM)));
+                Buffer sharedBuffer = device.createBuffer(new BufferDescriptor(16, Set.of(BufferUsage.UNIFORM)));
+                Texture sampledA = sampledPixel(device, (byte) 0x21);
+                Texture sampledB = sampledPixel(device, (byte) 0x42);
+                Texture sampledShared = sampledPixel(device, (byte) 0x63);
+                Sampler sampler = device.createSampler(new SamplerDescriptor(
+                        SamplerDescriptor.Filter.NEAREST,
+                        SamplerDescriptor.Filter.NEAREST,
+                        SamplerDescriptor.AddressMode.CLAMP_TO_EDGE));
+                BindingSet setA = device.createBindingSet(BindingSetDescriptor.builder(layoutA)
+                        .bind(textureA, new TextureBinding(sampledA, sampler))
+                        .bind(uniformA, BufferBinding.whole(bufferA))
+                        .build());
+                BindingSet setB = device.createBindingSet(BindingSetDescriptor.builder(layoutB)
+                        .bind(textureB0, new TextureBinding(sampledA, sampler))
+                        .bind(textureB1, new TextureBinding(sampledB, sampler))
+                        .bind(uniformB0, BufferBinding.whole(bufferA))
+                        .bind(uniformB1, BufferBinding.whole(bufferB))
+                        .build());
+                BindingSet sharedSet = device.createBindingSet(BindingSetDescriptor.builder(sharedLayout)
+                        .bind(sharedTexture, new TextureBinding(sampledShared, sampler))
+                        .bind(sharedUniform, BufferBinding.whole(sharedBuffer))
+                        .build());
+                GraphicsState stateA = bindingPersistenceState(
+                        device, target, vertex, fragment, layoutA, sharedLayout);
+                GraphicsState stateB = bindingPersistenceState(
+                        device, target, vertex, fragment, layoutB, sharedLayout)) {
+            Renderer renderer = new Renderer(device);
+            renderer.execute(RenderPipeline.of(commands -> {
+                commands.transition(bufferA, ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
+                commands.transition(bufferB, ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
+                commands.transition(sharedBuffer, ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
+            }));
+
+            NativeBindings sharedUnderA = null;
+            if (inspectOpenGLBindings) {
+                renderBindingPersistencePass(
+                        renderer, target, stateA, stateB, setA, setB, sharedSet, false);
+                sharedUnderA = openGLBindings(1);
+            }
+            renderBindingPersistencePass(
+                    renderer, target, stateA, stateB, setA, setB, sharedSet, true);
+            if (inspectOpenGLBindings) {
+                NativeBindings sharedUnderB = openGLBindings(2);
+                NativeBindings overwrittenSlot = openGLBindings(1);
+                if (!sharedUnderA.equals(sharedUnderB)) {
+                    throw new AssertionError("OpenGL did not rebind the shared group using state B slots");
+                }
+                if (sharedUnderB.equals(overwrittenSlot)) {
+                    throw new AssertionError("OpenGL state B did not occupy the preceding native slots");
+                }
+            } else {
+                device.present(target);
+            }
+        }
+    }
+
+    private static GraphicsState bindingPersistenceState(
+            GraphicsDevice device,
+            RenderTarget target,
+            Shader vertex,
+            Shader fragment,
+            BindingLayout first,
+            BindingLayout shared) {
+        return device.createGraphicsState(GraphicsStateDescriptor.builder()
+                .vertexShader(vertex)
+                .fragmentShader(fragment)
+                .bindingLayout(first)
+                .bindingLayout(shared)
+                .colorFormat(target.colorFormats().get(0))
+                .build());
+    }
+
+    private static void renderBindingPersistencePass(
+            Renderer renderer,
+            RenderTarget target,
+            GraphicsState stateA,
+            GraphicsState stateB,
+            BindingSet setA,
+            BindingSet setB,
+            BindingSet sharedSet,
+            boolean switchState) {
+        renderer.execute(RenderPipeline.of(commands -> {
+            commands.beginRendering(RenderingInfo.builder(target)
+                    .color(ColorAttachmentOps.clear(Color.BLACK))
+                    .build());
+            commands.setGraphicsState(stateA);
+            commands.bindSet(0, setA);
+            commands.bindSet(1, sharedSet);
+            if (switchState) {
+                commands.setGraphicsState(stateB);
+                commands.bindSet(0, setB);
+            }
+            commands.draw(3, 1, 0, 0);
+            commands.endRendering();
+        }));
+    }
+
+    private static Texture sampledPixel(GraphicsDevice device, byte value) {
+        ByteBuffer pixel = ByteBuffer.allocate(4)
+                .put(value).put(value).put(value).put((byte) 0xFF)
+                .flip();
+        return device.createTexture(
+                new TextureDescriptor(1, 1, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)),
+                pixel,
+                ResourceState.SAMPLED_READ);
+    }
+
+    private static NativeBindings openGLBindings(int slot) {
+        org.lwjgl.opengl.GL13C.glActiveTexture(org.lwjgl.opengl.GL13C.GL_TEXTURE0 + slot);
+        int texture = org.lwjgl.opengl.GL11C.glGetInteger(org.lwjgl.opengl.GL11C.GL_TEXTURE_BINDING_2D);
+        int uniform = org.lwjgl.opengl.GL30C.glGetIntegeri(
+                org.lwjgl.opengl.GL31C.GL_UNIFORM_BUFFER_BINDING, slot);
+        return new NativeBindings(texture, uniform);
     }
 
     /** Exercises heap and direct buffer initialization before the existing triangle loop. */
@@ -427,6 +567,8 @@ public final class BackendSpikeMain {
     private static void putRgba(ByteBuffer texture, int red, int green, int blue) {
         texture.put((byte) red).put((byte) green).put((byte) blue).put((byte) 255);
     }
+
+    private record NativeBindings(int texture, int uniformBuffer) {}
 
     private record TexturedMesh(
             Buffer vertexBuffer,

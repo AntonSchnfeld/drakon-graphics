@@ -24,16 +24,17 @@ public final class VulkanBackendLogicChecks {
         scissorClippingIsSafe();
         uniformAlignmentIsChecked();
         drawRangesAreChecked();
+        transitionFromValidationFollowsConfig();
         System.out.println("Vulkan backend logic checks passed.");
     }
 
     private static void recordingStateIsLocalUntilCommit() {
         FakeStateResource resource = new FakeStateResource(ResourceState.UNDEFINED);
         VulkanRecordingState recording = new VulkanRecordingState();
-        recording.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_DST);
+        recording.transition(resource, ResourceState.COPY_DST);
         require(resource.committedState() == ResourceState.UNDEFINED, "recording mutated committed state");
         require(recording.effectiveState(resource) == ResourceState.COPY_DST, "recording state did not advance");
-        recording.transition(resource, ResourceState.COPY_DST, ResourceState.COPY_SRC);
+        recording.transition(resource, ResourceState.COPY_SRC);
         require(recording.effectiveState(resource) == ResourceState.COPY_SRC, "local transitions did not compose");
 
         VulkanCommandState finished = recording.finish();
@@ -48,8 +49,8 @@ public final class VulkanBackendLogicChecks {
         FakeStateResource resource = new FakeStateResource(ResourceState.UNDEFINED);
         VulkanRecordingState first = new VulkanRecordingState();
         VulkanRecordingState stale = new VulkanRecordingState();
-        first.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_DST);
-        stale.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_SRC);
+        first.transition(resource, ResourceState.COPY_DST);
+        stale.transition(resource, ResourceState.COPY_SRC);
 
         VulkanCommandState firstList = first.finish();
         VulkanCommandState staleList = stale.finish();
@@ -62,7 +63,7 @@ public final class VulkanBackendLogicChecks {
     private static void rejectedRecordingDoesNotCommit() {
         FakeStateResource resource = new FakeStateResource(ResourceState.UNDEFINED);
         VulkanRecordingState recording = new VulkanRecordingState();
-        recording.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_DST);
+        recording.transition(resource, ResourceState.COPY_DST);
         VulkanCommandState list = recording.finish();
         resource.commitState(ResourceState.COPY_SRC);
 
@@ -179,6 +180,13 @@ public final class VulkanBackendLogicChecks {
         expect(IllegalArgumentException.class,
                 () -> VulkanValidation.validateIndexRange(Long.MAX_VALUE, Long.MAX_VALUE - 1,
                         IndexType.UINT32, Integer.MAX_VALUE, 1));
+    }
+
+    private static void transitionFromValidationFollowsConfig() {
+        VulkanValidation.validateTransitionFrom(
+                false, ResourceState.UNDEFINED, ResourceState.VERTEX_READ, "buffer");
+        expect(IllegalStateException.class, () -> VulkanValidation.validateTransitionFrom(
+                true, ResourceState.UNDEFINED, ResourceState.VERTEX_READ, "buffer"));
     }
 
     private static void assertScissor(

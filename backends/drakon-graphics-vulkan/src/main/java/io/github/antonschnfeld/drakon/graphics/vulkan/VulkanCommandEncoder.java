@@ -22,6 +22,7 @@ import static org.lwjgl.vulkan.VK13.*;
 final class VulkanCommandEncoder implements CommandEncoder {
     private final VulkanDevice device;
     private final VkCommandBuffer commandBuffer;
+    private final boolean validation;
     private boolean rendering;
     private boolean nativeRendering;
     private boolean finished;
@@ -37,9 +38,10 @@ final class VulkanCommandEncoder implements CommandEncoder {
     private final VulkanRecordingState states = new VulkanRecordingState();
     private final Set<VulkanResource> resources = Collections.newSetFromMap(new IdentityHashMap<>());
 
-    VulkanCommandEncoder(VulkanDevice device, VkCommandBuffer commandBuffer) {
+    VulkanCommandEncoder(VulkanDevice device, VkCommandBuffer commandBuffer, boolean validation) {
         this.device = device;
         this.commandBuffer = commandBuffer;
+        this.validation = validation;
     }
 
     private void requireRecording() {
@@ -260,6 +262,26 @@ final class VulkanCommandEncoder implements CommandEncoder {
         }
     }
 
+    private void rebindRequiredBindingSets() {
+        int setCount = graphicsState.setLayouts.size();
+        if (setCount == 0) return;
+        recordCommand(() -> {
+            try (MemoryStack stack = stackPush()) {
+                var descriptorSets = stack.mallocLong(setCount);
+                for (int group = 0; group < setCount; group++) {
+                    descriptorSets.put(group, bindingSets.get(group).descriptorSet);
+                }
+                vkCmdBindDescriptorSets(
+                        commandBuffer,
+                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        graphicsState.pipelineLayout,
+                        0,
+                        descriptorSets,
+                        null);
+            }
+        });
+    }
+
     private void validateVertexBuffers(
             boolean indexed,
             int count,
@@ -292,6 +314,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
     @Override
     public void draw(int vertexCount, int instanceCount, int firstVertex, int firstInstance) {
         requireDraw(false, vertexCount, instanceCount, firstVertex, firstInstance);
+        rebindRequiredBindingSets();
         if (nativeRendering) {
             recordCommand(() -> vkCmdDraw(commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance));
         }
@@ -319,6 +342,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
         }
         VulkanValidation.validateIndexRange(
                 indexBuffer.size(), indexOffset, indexType, firstIndex, indexCount);
+        rebindRequiredBindingSets();
         if (nativeRendering) {
             recordCommand(() -> vkCmdDrawIndexed(
                     commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance));
@@ -370,18 +394,19 @@ final class VulkanCommandEncoder implements CommandEncoder {
         VulkanTexture vkTexture = device.owned(texture, VulkanTexture.class, "texture");
         validateTextureState(vkTexture, from);
         validateTextureState(vkTexture, to);
-        validateTransition(states.effectiveState(vkTexture), from, to);
+        ResourceState actual = states.effectiveState(vkTexture);
+        validateTransition(actual, from, to, "texture");
         reference(vkTexture);
         recordCommand(() -> {
             try (MemoryStack stack = stackPush()) {
                 VkImageMemoryBarrier2.Buffer barrier = VkImageMemoryBarrier2.calloc(1, stack);
                 barrier.get(0)
                         .sType$Default()
-                        .srcStageMask(VulkanMappings.stageMask(from))
-                        .srcAccessMask(VulkanMappings.accessMask(from))
+                        .srcStageMask(VulkanMappings.stageMask(actual))
+                        .srcAccessMask(VulkanMappings.accessMask(actual))
                         .dstStageMask(VulkanMappings.stageMask(to))
                         .dstAccessMask(VulkanMappings.accessMask(to))
-                        .oldLayout(VulkanMappings.imageLayout(from))
+                        .oldLayout(VulkanMappings.imageLayout(actual))
                         .newLayout(VulkanMappings.imageLayout(to))
                         .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                         .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
@@ -394,7 +419,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
                 vkCmdPipelineBarrier2(commandBuffer, dependency);
             }
         });
-        states.transition(vkTexture, from, to);
+        states.transition(vkTexture, to);
     }
 
     @Override
@@ -407,15 +432,16 @@ final class VulkanCommandEncoder implements CommandEncoder {
         VulkanBuffer vkBuffer = device.owned(buffer, VulkanBuffer.class, "buffer");
         validateBufferState(vkBuffer, from);
         validateBufferState(vkBuffer, to);
-        validateTransition(states.effectiveState(vkBuffer), from, to);
+        ResourceState actual = states.effectiveState(vkBuffer);
+        validateTransition(actual, from, to, "buffer");
         reference(vkBuffer);
         recordCommand(() -> {
             try (MemoryStack stack = stackPush()) {
                 VkBufferMemoryBarrier2.Buffer barrier = VkBufferMemoryBarrier2.calloc(1, stack);
                 barrier.get(0)
                         .sType$Default()
-                        .srcStageMask(VulkanMappings.stageMask(from))
-                        .srcAccessMask(VulkanMappings.accessMask(from))
+                        .srcStageMask(VulkanMappings.stageMask(actual))
+                        .srcAccessMask(VulkanMappings.accessMask(actual))
                         .dstStageMask(VulkanMappings.stageMask(to))
                         .dstAccessMask(VulkanMappings.accessMask(to))
                         .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
@@ -429,7 +455,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
                 vkCmdPipelineBarrier2(commandBuffer, dependency);
             }
         });
-        states.transition(vkBuffer, from, to);
+        states.transition(vkBuffer, to);
     }
 
     private static void validateTextureState(VulkanTexture texture, ResourceState state) {
@@ -456,14 +482,10 @@ final class VulkanCommandEncoder implements CommandEncoder {
         if (!valid) throw new IllegalArgumentException(state + " is not valid for this buffer");
     }
 
-    private void validateTransition(ResourceState actual, ResourceState from, ResourceState to) {
+    private void validateTransition(
+            ResourceState actual, ResourceState from, ResourceState to, String resource) {
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("cannot transition to UNDEFINED");
-        if (actual != from) {
-            // The core config currently does not expose validation() through the
-            // interface, but this backend always enforces explicit state truth in
-            // the spike because silent state mismatches invalidate barrier tests.
-            throw new IllegalStateException("resource state is " + actual + " but transition expected " + from);
-        }
+        VulkanValidation.validateTransitionFrom(validation, actual, from, resource);
     }
 
     @Override

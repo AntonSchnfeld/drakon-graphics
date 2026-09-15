@@ -3,9 +3,14 @@ package io.github.antonschnfeld.drakon.graphics.backend;
 /**
  * Options used when creating a {@link GraphicsDevice}.
  *
- * @param validation whether Drakon/backend validation checks should be enabled;
- *        native API validation facilities may additionally be enabled when the
- *        backend can do so
+ * <p>Disabling validation removes optional diagnostic checks, such as verifying
+ * a transition's declared prior state against backend tracking. Portable
+ * argument, ownership, lifetime, and resource-usage rules, along with checks
+ * required to avoid invalid native calls, remain enforced.</p>
+ *
+ * @param validation whether optional Drakon/backend diagnostic validation should
+ *        be enabled; native API validation facilities may additionally be
+ *        enabled when the backend can do so
  */
 public record GraphicsDeviceConfig(boolean validation) {
     /**

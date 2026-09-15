@@ -17,13 +17,15 @@ import static org.lwjgl.opengl.GL43C.*;
 /** Records portable commands and replays them against one OpenGL context on submit. */
 final class OpenGLCommandEncoder implements CommandEncoder {
     private final OpenGLDevice device;
+    private final boolean validation;
     private final List<OpenGLCommand> commands = new ArrayList<>();
     private boolean rendering;
     private boolean finished;
     private OpenGLGraphicsState graphicsState;
 
-    OpenGLCommandEncoder(OpenGLDevice device) {
+    OpenGLCommandEncoder(OpenGLDevice device, boolean validation) {
         this.device = device;
+        this.validation = validation;
     }
 
     private void requireRecording() {
@@ -230,9 +232,15 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         OpenGLBindingPlan plan = context.graphicsState.bindings;
         if (set.layout() != plan.layout(group)) throw new IllegalStateException("binding layout changed incompatibly");
         validateBindingSetResources(set);
-        for (Binding<?> binding : set.layout().bindings()) {
+        applyNativeBindings(plan, group, set);
+        context.bindingSets.put(group, set);
+    }
+
+    private static void applyNativeBindings(OpenGLBindingPlan plan, int group, OpenGLBindingSet set) {
+        for (OpenGLBindingPlan.NativeBinding nativeBinding : plan.nativeBindings(group)) {
+            Binding<?> binding = nativeBinding.binding();
             Object value = set.descriptor.values().get(binding);
-            int slot = plan.slot(binding);
+            int slot = nativeBinding.slot();
             switch (binding.type()) {
                 case SAMPLED_TEXTURE -> {
                     TextureBinding sampled = (TextureBinding) value;
@@ -254,7 +262,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
                 }
             }
         }
-        context.bindingSets.put(group, set);
     }
 
     private static void validateBindingSetResources(OpenGLBindingSet set) {
@@ -348,6 +355,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         validateVertexBuffers(
                 context, indexed, count, instanceCount, first, firstInstance);
         if (indexed) validateIndexBuffer(context, first, count);
+        rebindRequiredBindingSets(context);
     }
 
     private static void validateRequiredBindingSets(OpenGLExecutionContext context) {
@@ -359,6 +367,13 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             }
             set.requireAlive();
             validateBindingSetResources(set);
+        }
+    }
+
+    private static void rebindRequiredBindingSets(OpenGLExecutionContext context) {
+        OpenGLBindingPlan plan = context.graphicsState.bindings;
+        for (int group = 0; group < plan.layoutCount(); group++) {
+            applyNativeBindings(plan, group, context.bindingSets.get(group));
         }
     }
 
@@ -446,9 +461,8 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("UNDEFINED cannot be a transition destination");
         commands.add(context -> {
             resource.requireAlive();
-            if (resource.state != from) {
-                throw new IllegalStateException("texture transition expected " + from + " but current state is " + resource.state);
-            }
+            OpenGLValidation.validateTransitionFrom(
+                    validation, resource.state, from, "texture");
             issueBarrier(resource.state, to);
             resource.state = to;
         });
@@ -467,9 +481,8 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("UNDEFINED cannot be a transition destination");
         commands.add(context -> {
             resource.requireAlive();
-            if (resource.state != from) {
-                throw new IllegalStateException("buffer transition expected " + from + " but current state is " + resource.state);
-            }
+            OpenGLValidation.validateTransitionFrom(
+                    validation, resource.state, from, "buffer");
             issueBarrier(resource.state, to);
             resource.state = to;
         });
