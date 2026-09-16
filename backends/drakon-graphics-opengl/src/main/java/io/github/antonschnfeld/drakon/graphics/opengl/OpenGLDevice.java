@@ -43,6 +43,7 @@ import static org.lwjgl.opengl.GL43C.*;
 public final class OpenGLDevice implements GraphicsDevice {
     private final GraphicsDeviceConfig config;
     private final GLCapabilities capabilities;
+    private final OpenGLNativeDebug nativeDebug;
     private final long uniformBufferOffsetAlignment;
     private final OpenGLShaderTarget shaderTarget = new OpenGLShaderTarget(4, 3, 430);
     private final List<OpenGLResource> resources = new ArrayList<>();
@@ -51,25 +52,30 @@ public final class OpenGLDevice implements GraphicsDevice {
     private OpenGLDevice(
             GraphicsDeviceConfig config,
             GLCapabilities capabilities,
+            OpenGLNativeDebug nativeDebug,
             long uniformBufferOffsetAlignment) {
         this.config = config;
         this.capabilities = capabilities;
+        this.nativeDebug = nativeDebug;
         this.uniformBufferOffsetAlignment = uniformBufferOffsetAlignment;
     }
 
     static OpenGLDevice create(GraphicsDeviceConfig config) {
         Objects.requireNonNull(config, "config");
+        OpenGLNativeDebug nativeDebug = null;
         try {
             GLCapabilities caps = GL.createCapabilities();
             if (!caps.OpenGL43) {
                 throw new IllegalStateException("the current external context does not support OpenGL 4.3");
             }
+            nativeDebug = OpenGLNativeDebug.install(config.validation());
             long alignment = glGetInteger(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT);
             if (alignment <= 0) {
                 throw new IllegalStateException("OpenGL reported an invalid uniform-buffer offset alignment");
             }
-            return new OpenGLDevice(config, caps, alignment);
+            return new OpenGLDevice(config, caps, nativeDebug, alignment);
         } catch (RuntimeException | Error failure) {
+            if (nativeDebug != null) nativeDebug.close();
             throw new IllegalStateException("an OpenGL 4.3 context must be current when creating a device", failure);
         }
     }
@@ -464,11 +470,15 @@ public final class OpenGLDevice implements GraphicsDevice {
     public void close() {
         if (closed) return;
         activateCapabilities();
-        glFinish();
-        for (int i = resources.size() - 1; i >= 0; i--) {
-            OpenGLResource resource = resources.get(i);
-            if (!resource.isClosed()) resource.close();
+        try {
+            glFinish();
+            for (int i = resources.size() - 1; i >= 0; i--) {
+                OpenGLResource resource = resources.get(i);
+                if (!resource.isClosed()) resource.close();
+            }
+        } finally {
+            if (nativeDebug != null) nativeDebug.close();
+            closed = true;
         }
-        closed = true;
     }
 }

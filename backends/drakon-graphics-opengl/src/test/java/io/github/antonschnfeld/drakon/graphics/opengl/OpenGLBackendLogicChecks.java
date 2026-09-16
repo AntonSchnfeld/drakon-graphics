@@ -17,6 +17,14 @@ import java.nio.ByteBuffer;
 import java.util.IdentityHashMap;
 import java.util.List;
 
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_SEVERITY_HIGH;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_SEVERITY_LOW;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_SEVERITY_MEDIUM;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_SEVERITY_NOTIFICATION;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_SOURCE_API;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_TYPE_ERROR;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_TYPE_PERFORMANCE;
+
 /** Hardware-free checks for portable validation arithmetic and OpenGL binding plans. */
 public final class OpenGLBackendLogicChecks {
     private OpenGLBackendLogicChecks() {}
@@ -30,7 +38,32 @@ public final class OpenGLBackendLogicChecks {
         stateChangesRemapSharedBindings();
         transitionFromValidationFollowsConfig();
         uploadAdaptationPreservesSelectedRanges();
+        nativeDebugMessagesAreFilteredAndFormatted();
+        nativeDebugCallbackOwnershipIsExplicit();
         System.out.println("OpenGL backend logic checks passed.");
+    }
+
+    private static void nativeDebugMessagesAreFilteredAndFormatted() {
+        require(OpenGLNativeDebug.accepts(GL_DEBUG_TYPE_PERFORMANCE, GL_DEBUG_SEVERITY_HIGH),
+                "OpenGL high-severity message was filtered");
+        require(OpenGLNativeDebug.accepts(GL_DEBUG_TYPE_PERFORMANCE, GL_DEBUG_SEVERITY_MEDIUM),
+                "OpenGL medium-severity message was filtered");
+        require(OpenGLNativeDebug.accepts(GL_DEBUG_TYPE_ERROR, GL_DEBUG_SEVERITY_LOW),
+                "OpenGL error was filtered because of its severity");
+        require(!OpenGLNativeDebug.accepts(GL_DEBUG_TYPE_PERFORMANCE, GL_DEBUG_SEVERITY_NOTIFICATION),
+                "OpenGL notification was accepted");
+        String formatted = OpenGLNativeDebug.format(
+                GL_DEBUG_SOURCE_API, GL_DEBUG_TYPE_ERROR, 12, GL_DEBUG_SEVERITY_HIGH, "bad\nstate");
+        require(formatted.contains("[HIGH][ERROR]"), "OpenGL message omitted severity/type");
+        require(formatted.contains("API id=12"), "OpenGL message omitted source/ID");
+        require(!formatted.contains("\n"), "OpenGL message was not compacted");
+    }
+
+    private static void nativeDebugCallbackOwnershipIsExplicit() {
+        require(OpenGLNativeDebug.shouldInstall(0L), "empty callback slot was not claimable");
+        require(!OpenGLNativeDebug.shouldInstall(10L), "external callback slot was claimable");
+        require(OpenGLNativeDebug.ownsInstalledCallback(10L, 10L), "owned callback was not recognized");
+        require(!OpenGLNativeDebug.ownsInstalledCallback(11L, 10L), "replacement callback was claimed");
     }
 
     private static void scissorClippingIsSafe() {

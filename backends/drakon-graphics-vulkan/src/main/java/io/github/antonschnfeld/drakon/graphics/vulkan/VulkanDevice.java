@@ -45,6 +45,7 @@ import static org.lwjgl.vulkan.KHRSwapchain.*;
 public final class VulkanDevice implements GraphicsDevice {
     private final GraphicsDeviceConfig config;
     private final VkInstance instance;
+    private final VulkanNativeDebug nativeDebug;
     private final VkPhysicalDevice physicalDevice;
     private final VkDevice device;
     private final int queueFamily;
@@ -63,6 +64,7 @@ public final class VulkanDevice implements GraphicsDevice {
     private VulkanDevice(
             GraphicsDeviceConfig config,
             VkInstance instance,
+            VulkanNativeDebug nativeDebug,
             VkPhysicalDevice physicalDevice,
             VkDevice device,
             int queueFamily,
@@ -73,6 +75,7 @@ public final class VulkanDevice implements GraphicsDevice {
             boolean presentationEnabled) {
         this.config = config;
         this.instance = instance;
+        this.nativeDebug = nativeDebug;
         this.physicalDevice = physicalDevice;
         this.device = device;
         this.queueFamily = queueFamily;
@@ -87,23 +90,32 @@ public final class VulkanDevice implements GraphicsDevice {
     static VulkanDevice createHeadless(GraphicsDeviceConfig config) {
         Objects.requireNonNull(config, "config");
         try (Arena arena = Arena.ofConfined()) {
-            VkApplicationInfo app = VulkanFfm.struct(arena, VkApplicationInfo.SIZEOF, VkApplicationInfo.ALIGNOF, VkApplicationInfo::create)
-                    .sType$Default()
-                    .pApplicationName(VulkanFfm.utf8(arena, "drakon-graphics backend spike"))
-                    .applicationVersion(VK_MAKE_VERSION(0, 1, 0))
-                    .pEngineName(VulkanFfm.utf8(arena, "drakon-graphics"))
-                    .engineVersion(VK_MAKE_VERSION(0, 1, 0))
-                    .apiVersion(VK_API_VERSION_1_3);
-
-            VkInstanceCreateInfo createInfo = VulkanFfm.struct(arena, VkInstanceCreateInfo.SIZEOF, VkInstanceCreateInfo.ALIGNOF, VkInstanceCreateInfo::create)
-                    .sType$Default()
-                    .pApplicationInfo(app);
-
-            PointerBuffer pInstance = VulkanFfm.pointers(arena, 1);
-            check(vkCreateInstance(createInfo, null, pInstance), "vkCreateInstance");
-            VkInstance instance = new VkInstance(pInstance.get(0), createInfo);
-
+            VulkanNativeDebug nativeDebug = VulkanNativeDebug.prepare(config.validation(), List.of(), arena);
+            VkInstance instance = null;
             try {
+                VkApplicationInfo app = VulkanFfm.struct(arena, VkApplicationInfo.SIZEOF, VkApplicationInfo.ALIGNOF, VkApplicationInfo::create)
+                        .sType$Default()
+                        .pApplicationName(VulkanFfm.utf8(arena, "drakon-graphics backend spike"))
+                        .applicationVersion(VK_MAKE_VERSION(0, 1, 0))
+                        .pEngineName(VulkanFfm.utf8(arena, "drakon-graphics"))
+                        .engineVersion(VK_MAKE_VERSION(0, 1, 0))
+                        .apiVersion(VK_API_VERSION_1_3);
+
+                VkInstanceCreateInfo createInfo = VulkanFfm.struct(arena, VkInstanceCreateInfo.SIZEOF, VkInstanceCreateInfo.ALIGNOF, VkInstanceCreateInfo::create)
+                        .sType$Default()
+                        .pApplicationInfo(app);
+                PointerBuffer enabledLayers = nativeNames(arena, nativeDebug.layers());
+                PointerBuffer enabledExtensions = nativeNames(arena, nativeDebug.extensions());
+                if (enabledLayers != null) createInfo.ppEnabledLayerNames(enabledLayers);
+                if (enabledExtensions != null) createInfo.ppEnabledExtensionNames(enabledExtensions);
+                VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = nativeDebug.createInfo(arena);
+                if (debugCreateInfo != null) createInfo.pNext(debugCreateInfo.address());
+
+                PointerBuffer pInstance = VulkanFfm.pointers(arena, 1);
+                check(vkCreateInstance(createInfo, null, pInstance), "vkCreateInstance(headless)");
+                instance = new VkInstance(pInstance.get(0), createInfo);
+                nativeDebug.createMessenger(instance, arena);
+
                 VkPhysicalDevice physicalDevice = pickPhysicalDevice(instance, arena);
                 int queueFamily = pickQueueFamily(physicalDevice, arena);
 
@@ -160,6 +172,7 @@ public final class VulkanDevice implements GraphicsDevice {
                     return new VulkanDevice(
                             config,
                             instance,
+                            nativeDebug,
                             physicalDevice,
                             device,
                             queueFamily,
@@ -175,7 +188,16 @@ public final class VulkanDevice implements GraphicsDevice {
                     throw failure;
                 }
             } catch (RuntimeException | Error failure) {
-                vkDestroyInstance(instance, null);
+                if (instance != null) {
+                    nativeDebug.destroyMessenger(instance);
+                    try {
+                        vkDestroyInstance(instance, null);
+                    } finally {
+                        nativeDebug.releaseCallback();
+                    }
+                } else {
+                    nativeDebug.releaseCallback();
+                }
                 throw failure;
             }
         }
@@ -189,15 +211,15 @@ public final class VulkanDevice implements GraphicsDevice {
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(surfaceFactory, "surfaceFactory");
         VkInstance instance = null;
+        VulkanNativeDebug nativeDebug = null;
+        VkDevice device = null;
         VulkanDevice result = null;
         long surface = 0L;
+        long commandPool = 0L;
+        long descriptorPool = 0L;
         try (Arena arena = Arena.ofConfined()) {
             List<String> extensionNames = List.copyOf(surfaceFactory.requiredInstanceExtensions());
-            PointerBuffer requiredExtensions = VulkanFfm.pointers(arena, extensionNames.size());
-            for (String extension : extensionNames) {
-                requiredExtensions.put(VulkanFfm.utf8(arena, Objects.requireNonNull(extension, "instance extension")));
-            }
-            requiredExtensions.flip();
+            nativeDebug = VulkanNativeDebug.prepare(config.validation(), extensionNames, arena);
 
             VkApplicationInfo app = VulkanFfm.struct(arena, VkApplicationInfo.SIZEOF, VkApplicationInfo.ALIGNOF, VkApplicationInfo::create)
                     .sType$Default()
@@ -208,11 +230,17 @@ public final class VulkanDevice implements GraphicsDevice {
                     .apiVersion(VK_API_VERSION_1_3);
             VkInstanceCreateInfo instanceInfo = VulkanFfm.struct(arena, VkInstanceCreateInfo.SIZEOF, VkInstanceCreateInfo.ALIGNOF, VkInstanceCreateInfo::create)
                     .sType$Default()
-                    .pApplicationInfo(app)
-                    .ppEnabledExtensionNames(requiredExtensions);
+                    .pApplicationInfo(app);
+            PointerBuffer enabledLayers = nativeNames(arena, nativeDebug.layers());
+            PointerBuffer enabledExtensions = nativeNames(arena, nativeDebug.extensions());
+            if (enabledLayers != null) instanceInfo.ppEnabledLayerNames(enabledLayers);
+            if (enabledExtensions != null) instanceInfo.ppEnabledExtensionNames(enabledExtensions);
+            VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = nativeDebug.createInfo(arena);
+            if (debugCreateInfo != null) instanceInfo.pNext(debugCreateInfo.address());
             PointerBuffer pInstance = VulkanFfm.pointers(arena, 1);
             check(vkCreateInstance(instanceInfo, null, pInstance), "vkCreateInstance(presentation)");
             instance = new VkInstance(pInstance.get(0), instanceInfo);
+            nativeDebug.createMessenger(instance, arena);
 
             surface = surfaceFactory.createSurface(instance.address());
             if (surface == 0L) throw new IllegalStateException("surface factory returned a null Vulkan surface");
@@ -231,7 +259,7 @@ public final class VulkanDevice implements GraphicsDevice {
                             arena, VulkanFfm.utf8(arena, VK_KHR_SWAPCHAIN_EXTENSION_NAME)));
             PointerBuffer pDevice = VulkanFfm.pointers(arena, 1);
             check(vkCreateDevice(physicalDevice, deviceInfo, null, pDevice), "vkCreateDevice(presentation)");
-            VkDevice device = new VkDevice(pDevice.get(0), physicalDevice, deviceInfo);
+            device = new VkDevice(pDevice.get(0), physicalDevice, deviceInfo);
 
             PointerBuffer pQueue = VulkanFfm.pointers(arena, 1);
             vkGetDeviceQueue(device, queueFamily, 0, pQueue);
@@ -241,6 +269,7 @@ public final class VulkanDevice implements GraphicsDevice {
                     .queueFamilyIndex(queueFamily);
             LongBuffer pCommandPool = VulkanFfm.longs(arena, 1);
             check(vkCreateCommandPool(device, commandPoolInfo, null, pCommandPool), "vkCreateCommandPool");
+            commandPool = pCommandPool.get(0);
             VkDescriptorPoolSize.Buffer sizes = VulkanFfm.structBuffer(arena, VkDescriptorPoolSize.SIZEOF, VkDescriptorPoolSize.ALIGNOF, 2, VkDescriptorPoolSize::create);
             sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1024);
             sizes.get(1).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1024);
@@ -249,10 +278,11 @@ public final class VulkanDevice implements GraphicsDevice {
                     .maxSets(1024).pPoolSizes(sizes);
             LongBuffer pDescriptorPool = VulkanFfm.longs(arena, 1);
             check(vkCreateDescriptorPool(device, descriptorPoolInfo, null, pDescriptorPool), "vkCreateDescriptorPool");
+            descriptorPool = pDescriptorPool.get(0);
 
             result = new VulkanDevice(
-                    config, instance, physicalDevice, device, queueFamily, queue,
-                    pCommandPool.get(0), pDescriptorPool.get(0),
+                    config, instance, nativeDebug, physicalDevice, device, queueFamily, queue,
+                    commandPool, descriptorPool,
                     uniformBufferOffsetAlignment(physicalDevice, arena), true);
             long ownedSurface = surface;
             surface = 0L;
@@ -262,11 +292,35 @@ public final class VulkanDevice implements GraphicsDevice {
             if (result != null) {
                 result.close();
                 instance = null;
+            } else {
+                if (descriptorPool != 0L) vkDestroyDescriptorPool(device, descriptorPool, null);
+                if (commandPool != 0L) vkDestroyCommandPool(device, commandPool, null);
+                if (device != null) vkDestroyDevice(device, null);
             }
             if (surface != 0L && instance != null) vkDestroySurfaceKHR(instance, surface, null);
-            if (instance != null) vkDestroyInstance(instance, null);
+            if (nativeDebug != null && result == null) {
+                if (instance != null) nativeDebug.destroyMessenger(instance);
+                if (instance != null) {
+                    try {
+                        vkDestroyInstance(instance, null);
+                    } finally {
+                        nativeDebug.releaseCallback();
+                    }
+                } else {
+                    nativeDebug.releaseCallback();
+                }
+            }
             throw failure;
         }
+    }
+
+    private static PointerBuffer nativeNames(Arena arena, List<String> names) {
+        if (names.isEmpty()) return null;
+        PointerBuffer pointers = VulkanFfm.pointers(arena, names.size());
+        for (String name : names) {
+            pointers.put(VulkanFfm.utf8(arena, Objects.requireNonNull(name, "native name")));
+        }
+        return pointers.flip();
     }
 
     private static VkPhysicalDevice pickPhysicalDevice(VkInstance instance, long surface, Arena arena) {
@@ -1573,7 +1627,12 @@ public final class VulkanDevice implements GraphicsDevice {
         vkDestroyCommandPool(device, commandPool, null);
         closed = true;
         vkDestroyDevice(device, null);
-        vkDestroyInstance(instance, null);
+        nativeDebug.destroyMessenger(instance);
+        try {
+            vkDestroyInstance(instance, null);
+        } finally {
+            nativeDebug.releaseCallback();
+        }
     }
 
     static void check(int result, String operation) {

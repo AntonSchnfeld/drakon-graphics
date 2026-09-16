@@ -43,6 +43,7 @@ import io.github.antonschnfeld.drakon.graphics.shader.SpirvShaderCode;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanBackend;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanDevice;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanPresentation;
+import org.lwjgl.opengl.GL;
 
 import java.lang.foreign.Arena;
 import java.nio.ByteBuffer;
@@ -50,6 +51,11 @@ import java.nio.ByteOrder;
 import java.util.Locale;
 import java.util.Set;
 
+import static org.lwjgl.opengl.GL11C.glGetPointer;
+import static org.lwjgl.opengl.GL11C.glIsEnabled;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_CALLBACK_FUNCTION;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_OUTPUT;
+import static org.lwjgl.opengl.GL43C.GL_DEBUG_OUTPUT_SYNCHRONOUS;
 import static org.lwjgl.util.shaderc.Shaderc.*;
 
 /**
@@ -129,6 +135,10 @@ public final class BackendSpikeMain {
             if (!backend.isSupported()) {
                 throw new AssertionError("OpenGL backend did not recognize the current OpenGL 4.3 context");
             }
+            GL.createCapabilities();
+            long callbackBefore = glGetPointer(GL_DEBUG_CALLBACK_FUNCTION);
+            boolean debugOutputBefore = glIsEnabled(GL_DEBUG_OUTPUT);
+            boolean synchronousOutputBefore = glIsEnabled(GL_DEBUG_OUTPUT_SYNCHRONOUS);
             try (OpenGLDevice device = backend.createDevice(GraphicsDeviceConfig.debug());
                     GlfwOpenGLRenderTarget target = new GlfwOpenGLRenderTarget(device, window)) {
                 try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
@@ -152,6 +162,11 @@ public final class BackendSpikeMain {
                         runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
                     }
                 }
+            }
+            if (glGetPointer(GL_DEBUG_CALLBACK_FUNCTION) != callbackBefore
+                    || glIsEnabled(GL_DEBUG_OUTPUT) != debugOutputBefore
+                    || glIsEnabled(GL_DEBUG_OUTPUT_SYNCHRONOUS) != synchronousOutputBefore) {
+                throw new AssertionError("OpenGL device did not restore external debug state");
             }
         }
     }
