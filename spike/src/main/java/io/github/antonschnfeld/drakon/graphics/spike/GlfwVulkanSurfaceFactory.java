@@ -2,10 +2,11 @@ package io.github.antonschnfeld.drakon.graphics.spike;
 
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanSurfaceFactory;
 import org.lwjgl.PointerBuffer;
-import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
-import java.nio.LongBuffer;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,6 +28,7 @@ final class GlfwVulkanSurfaceFactory implements VulkanSurfaceFactory {
         if (extensions == null) throw new IllegalStateException("GLFW returned no Vulkan instance extensions");
         List<String> names = new ArrayList<>(extensions.remaining());
         for (int i = extensions.position(); i < extensions.limit(); i++) {
+            // Borrowed from GLFW; GLFW owns the NUL-terminated extension-name storage.
             names.add(MemoryUtil.memUTF8(extensions.get(i)));
         }
         return List.copyOf(names);
@@ -34,13 +36,13 @@ final class GlfwVulkanSurfaceFactory implements VulkanSurfaceFactory {
 
     @Override
     public long createSurface(long instanceHandle) {
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            LongBuffer surface = stack.mallocLong(1);
-            int result = nglfwCreateWindowSurface(instanceHandle, window.handle(), 0L, MemoryUtil.memAddress(surface));
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment surface = arena.allocate(ValueLayout.JAVA_LONG);
+            int result = nglfwCreateWindowSurface(instanceHandle, window.handle(), 0L, surface.address());
             if (result != VK_SUCCESS) {
                 throw new IllegalStateException("glfwCreateWindowSurface failed with VkResult " + result);
             }
-            return surface.get(0);
+            return surface.get(ValueLayout.JAVA_LONG, 0);
         }
     }
 
