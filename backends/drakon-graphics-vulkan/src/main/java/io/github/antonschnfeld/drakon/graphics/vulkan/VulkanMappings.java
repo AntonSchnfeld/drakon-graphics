@@ -95,7 +95,7 @@ final class VulkanMappings {
     }
 
     static int bufferUsage(java.util.Set<BufferUsage> usages) {
-        int flags = 0;
+        int flags = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         for (BufferUsage usage : usages) {
             flags |= switch (usage) {
                 case VERTEX -> VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;

@@ -6,6 +6,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.ScissorRect;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexFormat;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexInputRate;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexLayout;
+import io.github.antonschnfeld.drakon.graphics.resource.BufferUsage;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -14,6 +15,7 @@ import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.List;
 import java.util.Set;
+import java.util.ArrayList;
 
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
@@ -21,6 +23,7 @@ import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_VER
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
 /** Hardware-free checks for Vulkan submission-state and resource-lifetime bookkeeping. */
 public final class VulkanBackendLogicChecks {
@@ -45,6 +48,7 @@ public final class VulkanBackendLogicChecks {
         nativeDebugMessagesAreFilteredAndFormatted();
         ffmScratchViewsHaveExactNativeLayout();
         mappedCopyUsesTheSelectedRange();
+        bufferUpdatePlanningIsExact();
         System.out.println("Vulkan backend logic checks passed.");
     }
 
@@ -299,6 +303,48 @@ public final class VulkanBackendLogicChecks {
         }
     }
 
+    private static void bufferUpdatePlanningIsExact() {
+        require((VulkanMappings.bufferUsage(Set.of(BufferUsage.VERTEX))
+                & VK_BUFFER_USAGE_TRANSFER_DST_BIT) != 0,
+                "portable Vulkan buffers lack the internal transfer-destination usage");
+        VulkanBufferUpdates.validateRange(16, 0, 4);
+        VulkanBufferUpdates.validateRange(16, 12, 4);
+        expect(IllegalArgumentException.class,
+                () -> VulkanBufferUpdates.validateRange(16, -4, 4));
+        expect(IllegalArgumentException.class,
+                () -> VulkanBufferUpdates.validateRange(16, 2, 4));
+        expect(IllegalArgumentException.class,
+                () -> VulkanBufferUpdates.validateRange(16, 0, 2));
+        expect(IllegalArgumentException.class,
+                () -> VulkanBufferUpdates.validateRange(16, 0, 0));
+        expect(IllegalArgumentException.class,
+                () -> VulkanBufferUpdates.validateRange(Long.MAX_VALUE, Long.MAX_VALUE - 3, 4));
+
+        assertUpdatePlan(12, VulkanBufferUpdates.MAX_UPDATE_BYTES, 1);
+        assertUpdatePlan(12, VulkanBufferUpdates.MAX_UPDATE_BYTES + 4L, 2);
+        assertUpdatePlan(12, VulkanBufferUpdates.MAX_UPDATE_BYTES * 3L + 12L, 4);
+        assertUpdatePlan(4, Integer.MAX_VALUE - 3L,
+                (int) ((Integer.MAX_VALUE - 3L + VulkanBufferUpdates.MAX_UPDATE_BYTES - 1L)
+                        / VulkanBufferUpdates.MAX_UPDATE_BYTES));
+    }
+
+    private static void assertUpdatePlan(long offset, long size, int expectedChunks) {
+        List<UpdateChunk> chunks = new ArrayList<>();
+        VulkanBufferUpdates.forEachChunk(offset, size,
+                (chunkOffset, chunkSize) -> chunks.add(new UpdateChunk(chunkOffset, chunkSize)));
+        require(chunks.size() == expectedChunks, "unexpected Vulkan update chunk count");
+        long covered = 0L;
+        for (UpdateChunk chunk : chunks) {
+            require(chunk.offset() == offset + covered, "Vulkan update chunks are not contiguous");
+            require((chunk.offset() & 3L) == 0L, "Vulkan update chunk offset is unaligned");
+            require((chunk.size() & 3) == 0, "Vulkan update chunk size is unaligned");
+            require(chunk.size() <= VulkanBufferUpdates.MAX_UPDATE_BYTES,
+                    "Vulkan update chunk exceeds vkCmdUpdateBuffer maximum");
+            covered += chunk.size();
+        }
+        require(covered == size, "Vulkan update chunks did not cover the exact range");
+    }
+
     private static void assertScissor(
             ScissorRect input,
             int targetWidth,
@@ -347,4 +393,6 @@ public final class VulkanBackendLogicChecks {
             commitCount++;
         }
     }
+
+    private record UpdateChunk(long offset, int size) {}
 }

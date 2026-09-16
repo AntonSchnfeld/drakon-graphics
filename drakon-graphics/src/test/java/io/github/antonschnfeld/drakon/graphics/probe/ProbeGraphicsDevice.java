@@ -122,6 +122,10 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         return textureStates.getOrDefault(texture, ResourceState.UNDEFINED);
     }
 
+    ResourceState bufferState(Buffer buffer) {
+        return bufferStates.getOrDefault(buffer, ResourceState.UNDEFINED);
+    }
+
     private static long textureByteCount(TextureDescriptor descriptor) {
         long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
         int bytesPerTexel = switch (descriptor.format()) {
@@ -230,6 +234,9 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         list.beginSubmission();
         try {
             if (validation && list.operations().isEmpty()) throw new IllegalStateException("empty command list");
+            for (ProbeCommandEncoder.ProbeBufferWrite write : list.bufferWrites()) {
+                requireOwned(write.buffer());
+            }
             list.markSubmitted();
         } catch (RuntimeException | Error failure) {
             list.markFailed();

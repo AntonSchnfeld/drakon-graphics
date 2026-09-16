@@ -38,6 +38,7 @@ public final class OpenGLBackendLogicChecks {
         stateChangesRemapSharedBindings();
         transitionFromValidationFollowsConfig();
         uploadAdaptationPreservesSelectedRanges();
+        bufferWriteSnapshotIsIndependent();
         nativeDebugMessagesAreFilteredAndFormatted();
         nativeDebugCallbackOwnershipIsExplicit();
         System.out.println("OpenGL backend logic checks passed.");
@@ -195,6 +196,29 @@ public final class OpenGLBackendLogicChecks {
         });
         require(source.position() == 2, "OpenGL upload changed caller position after return");
         require(source.limit() == 6, "OpenGL upload changed caller limit after return");
+    }
+
+    private static void bufferWriteSnapshotIsIndependent() {
+        ByteBuffer source = ByteBuffer.allocate(12);
+        for (int i = 0; i < source.capacity(); i++) source.put(i, (byte) (30 + i));
+        source.position(4).limit(12);
+        byte[] snapshot = OpenGLBufferUpdates.snapshot(24, 8, source);
+        require(source.position() == 4, "OpenGL write snapshot changed caller position");
+        require(source.limit() == 12, "OpenGL write snapshot changed caller limit");
+        for (int i = 4; i < 12; i++) source.put(i, (byte) 0);
+        for (int i = 0; i < snapshot.length; i++) {
+            require(snapshot[i] == (byte) (34 + i), "OpenGL write snapshot retained caller storage");
+        }
+        expect(IllegalArgumentException.class,
+                () -> OpenGLBufferUpdates.validateRange(16, -4, 4));
+        expect(IllegalArgumentException.class,
+                () -> OpenGLBufferUpdates.validateRange(16, 2, 4));
+        expect(IllegalArgumentException.class,
+                () -> OpenGLBufferUpdates.validateRange(16, 0, 2));
+        expect(IllegalArgumentException.class,
+                () -> OpenGLBufferUpdates.validateRange(16, 0, 0));
+        expect(IllegalArgumentException.class,
+                () -> OpenGLBufferUpdates.validateRange(Long.MAX_VALUE, Long.MAX_VALUE - 3, 4));
     }
 
     private static void assertScissor(

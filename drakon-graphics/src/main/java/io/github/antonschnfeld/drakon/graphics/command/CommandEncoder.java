@@ -8,6 +8,8 @@ import io.github.antonschnfeld.drakon.graphics.resource.IndexType;
 import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
 import io.github.antonschnfeld.drakon.graphics.resource.Texture;
 
+import java.nio.ByteBuffer;
+
 /**
  * Records backend-agnostic GPU commands into one command list.
  *
@@ -144,6 +146,44 @@ public interface CommandEncoder extends AutoCloseable {
      * @throws IllegalStateException if called inside a rendering scope or after finish
      */
     void copyTexture(Texture source, Texture destination);
+
+    /**
+     * Records an ordered write of CPU data into an existing GPU buffer.
+     *
+     * <p>The bytes selected by {@code data.position()} (inclusive) through
+     * {@code data.limit()} (exclusive) are copied to {@code buffer} beginning at
+     * {@code offset}. This method does not change the source buffer's position or
+     * limit. The selected bytes are captured before this method returns, so the
+     * caller may immediately modify, clear, reuse, or discard the source buffer.</p>
+     *
+     * <p>The destination offset and selected byte count must both be multiples of
+     * four, the selected range must be non-empty, and the destination range must
+     * fit completely within {@code buffer}. The destination must belong to this
+     * encoder's device, remain open when the write is recorded, and already be in
+     * {@link ResourceState#VERTEX_READ}, {@link ResourceState#INDEX_READ}, or
+     * {@link ResourceState#UNIFORM_READ}. The write preserves that logical
+     * resource state; an implementation may use backend-private transfer or
+     * update mechanisms without exposing them through {@link ResourceState}.</p>
+     *
+     * <p>The write executes at its recorded position in command-list order.
+     * Earlier commands observe the prior contents and later commands observe the
+     * new contents subject to their normal synchronization requirements. Work in
+     * previously submitted command lists remains ordered before this write and
+     * does not require caller-side waiting. Recording this operation neither
+     * submits work nor waits for GPU work. Writes are not allowed inside an
+     * active rendering scope.</p>
+     *
+     * @param buffer destination buffer created by this encoder's device
+     * @param offset four-byte-aligned destination byte offset
+     * @param data non-empty, four-byte-sized selected source range
+     * @throws NullPointerException if {@code buffer} or {@code data} is null
+     * @throws IllegalArgumentException if ownership, offset, alignment, byte
+     *         count, or destination bounds are invalid
+     * @throws IllegalStateException if recording has finished, rendering is
+     *         active, the destination is closed, or its effective state is not
+     *         one of the permitted buffer read states
+     */
+    void writeBuffer(Buffer buffer, long offset, ByteBuffer data);
 
     /**
      * Declares a texture state transition and the synchronization required to

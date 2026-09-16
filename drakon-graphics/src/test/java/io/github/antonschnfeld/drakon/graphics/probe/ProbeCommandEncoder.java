@@ -7,6 +7,7 @@ import io.github.antonschnfeld.drakon.graphics.command.CommandList;
 import io.github.antonschnfeld.drakon.graphics.command.RenderingInfo;
 
 import java.util.*;
+import java.nio.ByteBuffer;
 
 final class ProbeCommandEncoder implements CommandEncoder {
     private final ProbeGraphicsDevice owner;
@@ -15,6 +16,7 @@ final class ProbeCommandEncoder implements CommandEncoder {
     private final Map<Texture, ResourceState> textureStates;
     private final Map<Buffer, ResourceState> bufferStates;
     private final List<String> ops = new ArrayList<>();
+    private final List<ProbeBufferWrite> bufferWrites = new ArrayList<>();
     private final Map<Integer, Buffer> vertexBuffers = new HashMap<>();
     private final Map<Integer, ProbeResources.ProbeBindingSet> boundSets = new HashMap<>();
 
@@ -175,6 +177,34 @@ final class ProbeCommandEncoder implements CommandEncoder {
         ops.add(backendName + ": copyTexture " + debugId(source) + " -> " + debugId(destination));
     }
 
+    @Override public void writeBuffer(Buffer buffer, long offset, ByteBuffer data) {
+        open();
+        outsideRendering("writeBuffer");
+        owned(Objects.requireNonNull(buffer, "buffer"));
+        Objects.requireNonNull(data, "data");
+        int byteCount = data.remaining();
+        validateWriteRange(buffer.size(), offset, byteCount);
+        ResourceState state = bufferStates.getOrDefault(buffer, ResourceState.UNDEFINED);
+        if (state != ResourceState.VERTEX_READ
+                && state != ResourceState.INDEX_READ
+                && state != ResourceState.UNIFORM_READ) {
+            throw new IllegalStateException("buffer must be in VERTEX_READ, INDEX_READ, or UNIFORM_READ");
+        }
+        byte[] snapshot = new byte[byteCount];
+        data.duplicate().get(snapshot);
+        bufferWrites.add(new ProbeBufferWrite(buffer, offset, snapshot));
+        ops.add(backendName + ": writeBuffer " + debugId(buffer) + " offset=" + offset
+                + " size=" + byteCount);
+    }
+
+    private static void validateWriteRange(long bufferSize, long offset, int byteCount) {
+        if (offset < 0) throw new IllegalArgumentException("buffer write offset must be non-negative");
+        if (byteCount == 0) throw new IllegalArgumentException("buffer write must not be empty");
+        if ((offset & 3L) != 0L) throw new IllegalArgumentException("buffer write offset must be four-byte aligned");
+        if ((byteCount & 3) != 0) throw new IllegalArgumentException("buffer write size must be four-byte aligned");
+        if (offset > bufferSize - byteCount) throw new IllegalArgumentException("buffer write exceeds destination bounds");
+    }
+
     @Override public void transition(Texture texture, ResourceState from, ResourceState to) {
         open();
         outsideRendering("transition");
@@ -213,8 +243,10 @@ final class ProbeCommandEncoder implements CommandEncoder {
         open();
         if (activeRendering != null) throw new IllegalStateException("rendering scope still open");
         finished = true;
-        ProbeCommandList result = new ProbeCommandList(owner, List.copyOf(ops));
+        ProbeCommandList result = new ProbeCommandList(
+                owner, List.copyOf(ops), List.copyOf(bufferWrites));
         ops.clear();
+        bufferWrites.clear();
         owner.commandListCreated(result);
         return result;
     }
@@ -224,9 +256,11 @@ final class ProbeCommandEncoder implements CommandEncoder {
         finished = true;
         activeRendering = null;
         ops.clear();
+        bufferWrites.clear();
     }
 
     boolean terminal() { return finished; }
+    int recordedBufferWriteCount() { return bufferWrites.size(); }
 
     private void requireGraphicsDraw(boolean indexed) {
         if (activeRendering == null) throw new IllegalStateException("draw outside rendering");
@@ -335,6 +369,16 @@ final class ProbeCommandEncoder implements CommandEncoder {
             case UNDEFINED -> { }
             case COPY_SRC, COPY_DST, SAMPLED_READ, COLOR_ATTACHMENT_WRITE, DEPTH_ATTACHMENT_WRITE ->
                     throw new IllegalArgumentException("state " + state + " is not valid for buffers");
+        }
+    }
+
+    record ProbeBufferWrite(Buffer buffer, long offset, byte[] bytes) {
+        ProbeBufferWrite {
+            bytes = bytes.clone();
+        }
+
+        @Override public byte[] bytes() {
+            return bytes.clone();
         }
     }
 }

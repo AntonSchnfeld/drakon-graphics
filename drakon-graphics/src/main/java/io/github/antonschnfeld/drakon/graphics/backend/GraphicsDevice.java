@@ -61,9 +61,9 @@ public interface GraphicsDevice extends AutoCloseable {
      * buffer's position or limit. The supplied data must fit within the created
      * buffer.</p>
      *
-     * <p>This operation deliberately models creation-time upload only. The core
-     * API does not yet claim a complete contract for updating resources that may
-     * already be in flight on the GPU.</p>
+     * <p>This overload performs creation-time initialization. Ordered updates to
+     * an existing buffer during normal rendering are recorded with
+     * {@link CommandEncoder#writeBuffer(Buffer, long, ByteBuffer)}.</p>
      *
      * @param descriptor buffer size and intended usages
      * @param initialData initial bytes to copy into the new buffer

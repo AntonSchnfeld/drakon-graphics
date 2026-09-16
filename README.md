@@ -79,6 +79,18 @@ Both have deterministic lifetimes through `AutoCloseable`.
 
 A finished command list is single-submit: successful submission transfers ownership of its native command resources to the device until the GPU no longer needs them.
 
+Runtime buffer updates are recorded in the same ordered command stream as draws:
+
+```java
+commands.writeBuffer(uniformBuffer, 0, frameData);
+commands.beginRendering(renderingInfo);
+// bind and draw using the updated buffer
+commands.endRendering();
+```
+
+The selected source bytes are captured during recording, so the caller may reuse
+`frameData` immediately after `writeBuffer` returns.
+
 ### Resource states
 
 Application-visible resource usage is explicit.
@@ -175,10 +187,11 @@ The current scope includes:
 - viewport and scissor state
 - explicit resource transitions
 - texture-to-texture copies
+- ordered dynamic buffer writes
 - command recording and submission
 - deterministic GPU resource lifetimes
 
-Some important 0.1.0 work is still in progress, including safe dynamic per-frame buffer updates, broader validation, additional real-world rendering workloads, and release packaging.
+Some important 0.1.0 work is still in progress, including broader validation, additional real-world rendering workloads, and release packaging.
 
 The detailed release plan is available in [`docs/0.1.0-RELEASE-PLAN.md`](docs/0.1.0-RELEASE-PLAN.md).
 

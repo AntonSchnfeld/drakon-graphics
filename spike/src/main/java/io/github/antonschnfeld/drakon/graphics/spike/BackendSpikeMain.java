@@ -52,7 +52,9 @@ import java.util.Locale;
 import java.util.Set;
 
 import static org.lwjgl.opengl.GL11C.glGetPointer;
+import static org.lwjgl.opengl.GL11C.glGetInteger;
 import static org.lwjgl.opengl.GL11C.glIsEnabled;
+import static org.lwjgl.opengl.GL31C.GL_COPY_WRITE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_DEBUG_CALLBACK_FUNCTION;
 import static org.lwjgl.opengl.GL43C.GL_DEBUG_OUTPUT;
 import static org.lwjgl.opengl.GL43C.GL_DEBUG_OUTPUT_SYNCHRONOUS;
@@ -67,6 +69,7 @@ import static org.lwjgl.util.shaderc.Shaderc.*;
  */
 public final class BackendSpikeMain {
     private static final int LARGE_HEAP_INITIALIZATION_BYTES = 1024 * 1024;
+    private static final int DYNAMIC_STRESS_FRAMES = 240;
 
     private static final String VERTEX_GLSL = """
             #version 450
@@ -98,6 +101,72 @@ public final class BackendSpikeMain {
             layout(location = 0) out vec4 outColor;
             void main() {
                 outColor = texture(texturePattern, interpolatedUv);
+            }
+            """;
+
+    private static final String OPENGL_DYNAMIC_VERTEX_GLSL = """
+            #version 430
+            layout(location = 0) in vec2 position;
+            layout(location = 1) in vec2 uv;
+            layout(std140, binding = 1) uniform DynamicData {
+                vec4 transformAndTint;
+            } dynamicData;
+            layout(location = 0) out vec2 interpolatedUv;
+            layout(location = 1) out float interpolatedTint;
+            void main() {
+                vec2 animated = position * dynamicData.transformAndTint.z
+                    + dynamicData.transformAndTint.xy;
+                gl_Position = vec4(animated, 0.0, 1.0);
+                interpolatedUv = uv;
+                interpolatedTint = dynamicData.transformAndTint.w;
+            }
+            """;
+
+    private static final String OPENGL_DYNAMIC_FRAGMENT_GLSL = """
+            #version 430
+            layout(binding = 0) uniform sampler2D texturePattern;
+            layout(std140, binding = 1) uniform DynamicData {
+                vec4 transformAndTint;
+            } dynamicData;
+            layout(location = 0) in vec2 interpolatedUv;
+            layout(location = 1) in float interpolatedTint;
+            layout(location = 0) out vec4 outColor;
+            void main() {
+                vec4 texel = texture(texturePattern, interpolatedUv);
+                outColor = vec4(texel.rgb * (0.35 + 0.65 * interpolatedTint), texel.a);
+            }
+            """;
+
+    private static final String VULKAN_DYNAMIC_VERTEX_GLSL = """
+            #version 450
+            layout(location = 0) in vec2 position;
+            layout(location = 1) in vec2 uv;
+            layout(set = 0, binding = 1, std140) uniform DynamicData {
+                vec4 transformAndTint;
+            } dynamicData;
+            layout(location = 0) out vec2 interpolatedUv;
+            layout(location = 1) out float interpolatedTint;
+            void main() {
+                vec2 animated = position * dynamicData.transformAndTint.z
+                    + dynamicData.transformAndTint.xy;
+                gl_Position = vec4(animated, 0.0, 1.0);
+                interpolatedUv = uv;
+                interpolatedTint = dynamicData.transformAndTint.w;
+            }
+            """;
+
+    private static final String VULKAN_DYNAMIC_FRAGMENT_GLSL = """
+            #version 450
+            layout(set = 0, binding = 0) uniform sampler2D texturePattern;
+            layout(set = 0, binding = 1, std140) uniform DynamicData {
+                vec4 transformAndTint;
+            } dynamicData;
+            layout(location = 0) in vec2 interpolatedUv;
+            layout(location = 1) in float interpolatedTint;
+            layout(location = 0) out vec4 outColor;
+            void main() {
+                vec4 texel = texture(texturePattern, interpolatedUv);
+                outColor = vec4(texel.rgb * (0.35 + 0.65 * interpolatedTint), texel.a);
             }
             """;
 
@@ -151,15 +220,27 @@ public final class BackendSpikeMain {
                     verifyLargeHeapInitializationSmokeBuffer(largeHeapInitializedBuffer);
                     verifyInitializationSmokeTexture(heapInitializedTexture);
                     verifyInitializationSmokeTexture(directInitializedTexture);
-                        try (Shader vertex = device.createShader(new ShaderDescriptor(
+                    try (Shader vertex = device.createShader(new ShaderDescriptor(
                             ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_VERTEX_GLSL)));
                             Shader fragment = device.createShader(new ShaderDescriptor(
-                                    ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_FRAGMENT_GLSL)));
-                            TexturedMesh mesh = createTexturedMesh(device, target, vertex, fragment)) {
+                                    ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_FRAGMENT_GLSL)))) {
                         verifyInactiveOpenGLBindingTolerance(device, target, vertex);
                         verifyBindingPersistenceAcrossStateChange(
                                 device, target, vertex, fragment, true);
-                        runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
+                        try (Shader dynamicVertex = device.createShader(new ShaderDescriptor(
+                                ShaderStage.VERTEX, "main", new GlslShaderCode(OPENGL_DYNAMIC_VERTEX_GLSL)));
+                                Shader dynamicFragment = device.createShader(new ShaderDescriptor(
+                                        ShaderStage.FRAGMENT, "main", new GlslShaderCode(OPENGL_DYNAMIC_FRAGMENT_GLSL)));
+                                DynamicMesh mesh = createDynamicMesh(
+                                        device, target, dynamicVertex, dynamicFragment)) {
+                            int copyWriteBinding = glGetInteger(GL_COPY_WRITE_BUFFER);
+                            runDynamicBufferStress(device, target, mesh, window::pollEvents, "OpenGL");
+                            if (glGetInteger(GL_COPY_WRITE_BUFFER) != copyWriteBinding) {
+                                throw new AssertionError("OpenGL buffer writes changed external copy-write binding");
+                            }
+                            runDynamicWindowLoop(
+                                    device, target, mesh, window::shouldClose, window::pollEvents);
+                        }
                     }
                 }
             }
@@ -197,13 +278,23 @@ public final class BackendSpikeMain {
                             ShaderStage.VERTEX, "main",
                             new SpirvShaderCode(compileSpirv(VERTEX_GLSL, shaderc_glsl_vertex_shader))));
                             Shader fragment = device.createShader(new ShaderDescriptor(
-                                    ShaderStage.FRAGMENT, "main",
-                                    new SpirvShaderCode(compileSpirv(VULKAN_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
-                            TexturedMesh mesh = createTexturedMesh(device, target, vertex, fragment)) {
+                            ShaderStage.FRAGMENT, "main",
+                                    new SpirvShaderCode(compileSpirv(VULKAN_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))))) {
                         verifyBindingPersistenceAcrossStateChange(
                                 device, target, vertex, fragment, false);
                         runVulkanLifetimeStress(device, target, vertex, fragment);
-                        runWindowLoop(device, target, mesh, window::shouldClose, window::pollEvents);
+                        try (Shader dynamicVertex = device.createShader(new ShaderDescriptor(
+                                ShaderStage.VERTEX, "main", new SpirvShaderCode(compileSpirv(
+                                        VULKAN_DYNAMIC_VERTEX_GLSL, shaderc_glsl_vertex_shader))));
+                                Shader dynamicFragment = device.createShader(new ShaderDescriptor(
+                                        ShaderStage.FRAGMENT, "main", new SpirvShaderCode(compileSpirv(
+                                                VULKAN_DYNAMIC_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
+                                DynamicMesh mesh = createDynamicMesh(
+                                        device, target, dynamicVertex, dynamicFragment)) {
+                            runDynamicBufferStress(device, target, mesh, window::pollEvents, "Vulkan");
+                            runDynamicWindowLoop(
+                                    device, target, mesh, window::shouldClose, window::pollEvents);
+                        }
                     }
                 }
             }
@@ -479,36 +570,114 @@ public final class BackendSpikeMain {
         return new TexturedMesh(vertexBuffer, indexBuffer, texture, sampler, bindingSet, state);
     }
 
-    private static void runWindowLoop(
+    private static DynamicMesh createDynamicMesh(
+            GraphicsDevice device, RenderTarget target, Shader vertex, Shader fragment) {
+        Buffer vertexBuffer = device.createBuffer(
+                new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)), quadVertices());
+        Buffer indexBuffer = device.createBuffer(
+                new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)), quadIndices());
+        Buffer dynamicBuffer = device.createBuffer(
+                new BufferDescriptor(4L * Float.BYTES, Set.of(BufferUsage.UNIFORM)));
+        Texture texture = device.createTexture(
+                new TextureDescriptor(4, 4, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)),
+                quadrantTexture(),
+                ResourceState.SAMPLED_READ);
+        Sampler sampler = device.createSampler(new SamplerDescriptor(
+                SamplerDescriptor.Filter.NEAREST,
+                SamplerDescriptor.Filter.NEAREST,
+                SamplerDescriptor.AddressMode.CLAMP_TO_EDGE));
+
+        Binding<TextureBinding> textureBinding = Binding.sampledTexture(
+                "texturePattern", 0, ShaderStage.FRAGMENT);
+        Binding<BufferBinding> dynamicBinding = Binding.uniformBuffer(
+                "DynamicData", 1, ShaderStage.VERTEX, ShaderStage.FRAGMENT);
+        BindingLayout bindingLayout = BindingLayout.of(textureBinding, dynamicBinding);
+        GraphicsState state = device.createGraphicsState(
+                GraphicsStateDescriptor.builder()
+                        .vertexShader(vertex)
+                        .fragmentShader(fragment)
+                        .vertexLayout(VertexLayout.builder()
+                                .binding(0, 4 * Float.BYTES, VertexInputRate.PER_VERTEX)
+                                .attribute(0, 0, VertexFormat.FLOAT2, 0)
+                                .attribute(1, 0, VertexFormat.FLOAT2, 2 * Float.BYTES)
+                                .build())
+                        .bindingLayout(bindingLayout)
+                        .colorFormat(target.colorFormats().get(0))
+                        .build());
+        BindingSet bindingSet = device.createBindingSet(BindingSetDescriptor.builder(bindingLayout)
+                .bind(textureBinding, new TextureBinding(texture, sampler))
+                .bind(dynamicBinding, BufferBinding.whole(dynamicBuffer))
+                .build());
+        return new DynamicMesh(
+                vertexBuffer, indexBuffer, dynamicBuffer, texture, sampler, bindingSet, state);
+    }
+
+    private static void runDynamicBufferStress(
             GraphicsDevice device,
             RenderTarget target,
-            TexturedMesh mesh,
-            BooleanSupplier shouldClose,
-            Runnable pollEvents) {
+            DynamicMesh mesh,
+            Runnable pollEvents,
+            String backendName) {
         Renderer renderer = new Renderer(device);
         renderer.execute(RenderPipeline.of(commands -> {
             commands.transition(mesh.vertexBuffer(), ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
             commands.transition(mesh.indexBuffer(), ResourceState.UNDEFINED, ResourceState.INDEX_READ);
+            commands.transition(mesh.dynamicBuffer(), ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
         }));
-
-        while (!shouldClose.getAsBoolean()) {
-            // RenderingInfo is rebuilt because a presentation-backed target can
-            // change extent after a resize while retaining the same Java object.
-            RenderPass pass = commands -> {
-                commands.beginRendering(RenderingInfo.builder(target)
-                        .color(ColorAttachmentOps.clear(new Color(0.03f, 0.04f, 0.06f, 1.0f)))
-                        .build());
-                commands.setGraphicsState(mesh.state());
-                commands.setVertexBuffer(0, mesh.vertexBuffer(), 0);
-                commands.setIndexBuffer(mesh.indexBuffer(), IndexType.UINT16, 0);
-                commands.bindSet(0, mesh.bindingSet());
-                commands.drawIndexed(6, 1, 0, 0, 0);
-                commands.endRendering();
-            };
-            renderer.execute(RenderPipeline.of(pass));
+        for (int frame = 0; frame < DYNAMIC_STRESS_FRAMES; frame++) {
+            renderDynamicFrame(renderer, target, mesh, frame);
             device.present(target);
             pollEvents.run();
         }
+        System.out.println(backendName + " dynamic buffer stress passed: "
+                + DYNAMIC_STRESS_FRAMES + " ordered updates using one Buffer/BindingSet/GraphicsState.");
+    }
+
+    private static void runDynamicWindowLoop(
+            GraphicsDevice device,
+            RenderTarget target,
+            DynamicMesh mesh,
+            BooleanSupplier shouldClose,
+            Runnable pollEvents) {
+        Renderer renderer = new Renderer(device);
+        int frame = DYNAMIC_STRESS_FRAMES;
+        while (!shouldClose.getAsBoolean()) {
+            renderDynamicFrame(renderer, target, mesh, frame++);
+            device.present(target);
+            pollEvents.run();
+        }
+    }
+
+    private static void renderDynamicFrame(
+            Renderer renderer, RenderTarget target, DynamicMesh mesh, int frame) {
+        ByteBuffer frameData = dynamicFrameData(frame);
+        RenderPass pass = commands -> {
+            commands.writeBuffer(mesh.dynamicBuffer(), 0, frameData);
+            // RenderingInfo is rebuilt because a presentation-backed target can
+            // change extent after a resize while retaining the same Java object.
+            commands.beginRendering(RenderingInfo.builder(target)
+                    .color(ColorAttachmentOps.clear(new Color(0.03f, 0.04f, 0.06f, 1.0f)))
+                    .build());
+            commands.setGraphicsState(mesh.state());
+            commands.setVertexBuffer(0, mesh.vertexBuffer(), 0);
+            commands.setIndexBuffer(mesh.indexBuffer(), IndexType.UINT16, 0);
+            commands.bindSet(0, mesh.bindingSet());
+            commands.drawIndexed(6, 1, 0, 0, 0);
+            commands.endRendering();
+        };
+        renderer.execute(RenderPipeline.of(pass));
+    }
+
+    private static ByteBuffer dynamicFrameData(int frame) {
+        float phase = frame * 0.075f;
+        ByteBuffer data = ByteBuffer.allocate(24).order(ByteOrder.nativeOrder());
+        data.position(4);
+        data.putFloat(0.16f * (float) Math.sin(phase));
+        data.putFloat(0.10f * (float) Math.cos(phase * 0.73f));
+        data.putFloat(0.72f + 0.12f * (float) Math.sin(phase * 0.41f));
+        data.putFloat(0.55f + 0.45f * (float) Math.sin(phase * 0.57f));
+        data.limit(data.position()).position(4);
+        return data;
     }
 
     private static void runVulkanLifetimeStress(
@@ -598,6 +767,26 @@ public final class BackendSpikeMain {
             bindingSet.close();
             sampler.close();
             texture.close();
+            indexBuffer.close();
+            vertexBuffer.close();
+        }
+    }
+
+    private record DynamicMesh(
+            Buffer vertexBuffer,
+            Buffer indexBuffer,
+            Buffer dynamicBuffer,
+            Texture texture,
+            Sampler sampler,
+            BindingSet bindingSet,
+            GraphicsState state) implements AutoCloseable {
+        @Override
+        public void close() {
+            state.close();
+            bindingSet.close();
+            sampler.close();
+            texture.close();
+            dynamicBuffer.close();
             indexBuffer.close();
             vertexBuffer.close();
         }
