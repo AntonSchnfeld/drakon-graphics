@@ -1,6 +1,6 @@
 # drakon-graphics
 
-A small, explicit, backend-neutral graphics API for Java 21.
+A small, explicit, backend-neutral graphics API for Java 25.
 
 `drakon-graphics` sits between raw LWJGL graphics APIs and a full game engine. It provides a portable rendering interface for building real-time renderers without forcing application rendering code to depend directly on OpenGL or Vulkan.
 
@@ -186,13 +186,14 @@ The detailed release plan is available in [`docs/0.1.0-RELEASE-PLAN.md`](docs/0.
 
 Development currently requires:
 
-- JDK 21+
+- JDK 25+
 - Maven 3.9+
 - LWJGL 3.4.3
 - OpenGL 4.3+ for the OpenGL backend
 - Vulkan 1.3 for the Vulkan backend
 
 The portable core module itself does not depend on LWJGL.
+Backend implementations use Java's Foreign Function & Memory API for Drakon-owned native memory while LWJGL remains the native graphics binding layer.
 
 ## Building
 
@@ -205,7 +206,7 @@ mvn verify
 The project is compiled with:
 
 ```text
---release 21
+--release 25
 -Xlint:all
 -Werror
 ```

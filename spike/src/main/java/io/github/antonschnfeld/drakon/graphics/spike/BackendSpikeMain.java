@@ -43,8 +43,8 @@ import io.github.antonschnfeld.drakon.graphics.shader.SpirvShaderCode;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanBackend;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanDevice;
 import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanPresentation;
-import org.lwjgl.system.MemoryUtil;
 
+import java.lang.foreign.Arena;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Locale;
@@ -591,27 +591,40 @@ public final class BackendSpikeMain {
     /** Compiles GLSL solely for the Vulkan smoke harness, not the backend. */
     private static ByteBuffer compileSpirv(String source, int kind) {
         long compiler = shaderc_compiler_initialize();
-        if (compiler == MemoryUtil.NULL) throw new IllegalStateException("shaderc_compiler_initialize failed");
+        if (compiler == 0L) throw new IllegalStateException("shaderc_compiler_initialize failed");
         long options = shaderc_compile_options_initialize();
-        if (options == MemoryUtil.NULL) {
+        if (options == 0L) {
             shaderc_compiler_release(compiler);
             throw new IllegalStateException("shaderc_compile_options_initialize failed");
         }
         shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-        long result = shaderc_compile_into_spv(compiler, source, kind, "backend-spike.glsl", "main", options);
         try {
-            if (result == MemoryUtil.NULL) throw new IllegalStateException("shaderc_compile_into_spv failed");
-            int status = shaderc_result_get_compilation_status(result);
-            if (status != shaderc_compilation_status_success) {
-                throw new IllegalArgumentException("shaderc failed: " + shaderc_result_get_error_message(result));
+            try (Arena arena = Arena.ofConfined()) {
+                var sourceText = arena.allocateFrom(source);
+                long result = shaderc_compile_into_spv(
+                        compiler,
+                        sourceText.asSlice(0, sourceText.byteSize() - 1).asByteBuffer(),
+                        kind,
+                        arena.allocateFrom("backend-spike.glsl").asByteBuffer(),
+                        arena.allocateFrom("main").asByteBuffer(),
+                        options);
+                try {
+                    if (result == 0L) throw new IllegalStateException("shaderc_compile_into_spv failed");
+                    int status = shaderc_result_get_compilation_status(result);
+                    if (status != shaderc_compilation_status_success) {
+                        throw new IllegalArgumentException(
+                                "shaderc failed: " + shaderc_result_get_error_message(result));
+                    }
+                    ByteBuffer bytes = shaderc_result_get_bytes(result);
+                    if (bytes == null) throw new IllegalStateException("shaderc returned no SPIR-V bytes");
+                    ByteBuffer copy = ByteBuffer.allocate(bytes.remaining());
+                    copy.put(bytes).flip();
+                    return copy.asReadOnlyBuffer();
+                } finally {
+                    if (result != 0L) shaderc_result_release(result);
+                }
             }
-            ByteBuffer bytes = shaderc_result_get_bytes(result);
-            if (bytes == null) throw new IllegalStateException("shaderc returned no SPIR-V bytes");
-            ByteBuffer copy = ByteBuffer.allocateDirect(bytes.remaining());
-            copy.put(bytes).flip();
-            return copy.asReadOnlyBuffer();
         } finally {
-            if (result != MemoryUtil.NULL) shaderc_result_release(result);
             shaderc_compile_options_release(options);
             shaderc_compiler_release(compiler);
         }

@@ -12,7 +12,6 @@ import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderTarget;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GLCapabilities;
-import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -140,18 +139,17 @@ public final class OpenGLDevice implements GraphicsDevice {
         activateCapabilities();
         int handle = glGenBuffers();
         glBindBuffer(GL_ARRAY_BUFFER, handle);
-        ByteBuffer uploadData = data == null ? null : directUploadData(data);
-        try {
-            if (uploadData == null) {
-                glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
-            } else if (uploadData.remaining() == descriptor.size()) {
-                glBufferData(GL_ARRAY_BUFFER, uploadData, GL_STATIC_DRAW);
-            } else {
-                glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
-                glBufferSubData(GL_ARRAY_BUFFER, 0, uploadData);
-            }
-        } finally {
-            freeUploadData(data, uploadData);
+        if (data == null) {
+            glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
+        } else {
+            OpenGLUploadMemory.withNativeBuffer(data, uploadData -> {
+                if (uploadData.remaining() == descriptor.size()) {
+                    glBufferData(GL_ARRAY_BUFFER, uploadData, GL_STATIC_DRAW);
+                } else {
+                    glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, uploadData);
+                }
+            });
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         return track(new OpenGLBuffer(this, handle, descriptor));
@@ -177,8 +175,7 @@ public final class OpenGLDevice implements GraphicsDevice {
         activateCapabilities();
         int handle = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, handle);
-        ByteBuffer uploadData = initialData == null ? null : directUploadData(initialData);
-        try {
+        if (initialData == null) {
             glTexImage2D(
                     GL_TEXTURE_2D,
                     0,
@@ -188,9 +185,18 @@ public final class OpenGLDevice implements GraphicsDevice {
                     0,
                     OpenGLMappings.textureExternalFormat(descriptor.format()),
                     OpenGLMappings.textureExternalType(descriptor.format()),
-                    uploadData);
-        } finally {
-            freeUploadData(initialData, uploadData);
+                    (ByteBuffer) null);
+        } else {
+            OpenGLUploadMemory.withNativeBuffer(initialData, uploadData -> glTexImage2D(
+                    GL_TEXTURE_2D,
+                    0,
+                    OpenGLMappings.textureInternalFormat(descriptor.format()),
+                    descriptor.width(),
+                    descriptor.height(),
+                    0,
+                    OpenGLMappings.textureExternalFormat(descriptor.format()),
+                    OpenGLMappings.textureExternalType(descriptor.format()),
+                    uploadData));
         }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -200,27 +206,6 @@ public final class OpenGLDevice implements GraphicsDevice {
         OpenGLTexture texture = new OpenGLTexture(this, handle, descriptor);
         texture.state = initialState;
         return track(texture);
-    }
-
-    /**
-     * Returns data suitable for an LWJGL native call without changing the caller-visible buffer.
-     *
-     * <p>LWJGL requires native buffers for pointer-based overloads. Heap buffers are copied into
-     * temporary native memory that is released at the end of the enclosing upload operation.</p>
-     */
-    private static ByteBuffer directUploadData(ByteBuffer data) {
-        if (data.isDirect()) {
-            return data;
-        }
-        ByteBuffer nativeData = MemoryUtil.memAlloc(data.remaining());
-        nativeData.put(data.duplicate());
-        return nativeData.flip();
-    }
-
-    private static void freeUploadData(ByteBuffer originalData, ByteBuffer uploadData) {
-        if (originalData != null && !originalData.isDirect()) {
-            MemoryUtil.memFree(uploadData);
-        }
     }
 
     private static void validateInitialTexture(

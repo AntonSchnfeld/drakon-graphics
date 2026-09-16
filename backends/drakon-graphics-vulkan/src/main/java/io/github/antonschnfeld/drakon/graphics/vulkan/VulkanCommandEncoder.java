@@ -2,9 +2,9 @@ package io.github.antonschnfeld.drakon.graphics.vulkan;
 
 import io.github.antonschnfeld.drakon.graphics.command.*;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
-import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 
+import java.lang.foreign.Arena;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -14,7 +14,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK13.*;
 
@@ -69,8 +68,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
                     info.scissor(), target.width(), target.height());
             nativeRendering = !effective.empty();
 
-            if (nativeRendering) try (MemoryStack stack = stackPush()) {
-                VkRenderingAttachmentInfo.Buffer colors = VkRenderingAttachmentInfo.calloc(target.colorFormats().size(), stack);
+            if (nativeRendering) try (Arena arena = Arena.ofConfined()) {
+                VkRenderingAttachmentInfo.Buffer colors = VulkanFfm.structBuffer(arena, VkRenderingAttachmentInfo.SIZEOF, VkRenderingAttachmentInfo.ALIGNOF, target.colorFormats().size(), VkRenderingAttachmentInfo::create);
                 for (int i = 0; i < target.colorFormats().size(); i++) {
                     ColorAttachmentOps ops = info.colors().get(i);
                     VkRenderingAttachmentInfo attachment = colors.get(i)
@@ -88,7 +87,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
                 VkRenderingAttachmentInfo depth = null;
                 if (target.depthFormat() != null) {
                     DepthAttachmentOps ops = info.depth().orElseThrow();
-                    depth = VkRenderingAttachmentInfo.calloc(stack)
+                    depth = VulkanFfm.struct(arena, VkRenderingAttachmentInfo.SIZEOF, VkRenderingAttachmentInfo.ALIGNOF, VkRenderingAttachmentInfo::create)
                             .sType$Default()
                             .imageView(target.depthView())
                             .imageLayout(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)
@@ -97,7 +96,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
                     if (ops.loadOp() == LoadOp.CLEAR) depth.clearValue().depthStencil().depth(ops.clearDepth()).stencil(0);
                 }
 
-                VkRenderingInfo renderingInfo = VkRenderingInfo.calloc(stack)
+                VkRenderingInfo renderingInfo = VulkanFfm.struct(arena, VkRenderingInfo.SIZEOF, VkRenderingInfo.ALIGNOF, VkRenderingInfo::create)
                         .sType$Default()
                         .renderArea(a -> a.offset(o -> o.set(effective.x(), effective.y()))
                                 .extent(e -> e.width(effective.width()).height(effective.height())))
@@ -111,10 +110,10 @@ final class VulkanCommandEncoder implements CommandEncoder {
                 // shader code. Paired with VK_FRONT_FACE_COUNTER_CLOCKWISE, this
                 // preserves the portable counter-clockwise front-face contract.
                 Viewport v = info.viewport();
-                VkViewport.Buffer viewport = VkViewport.calloc(1, stack);
+                VkViewport.Buffer viewport = VulkanFfm.structBuffer(arena, VkViewport.SIZEOF, VkViewport.ALIGNOF, 1, VkViewport::create);
                 viewport.get(0).x(v.x()).y(v.y() + v.height()).width(v.width()).height(-v.height()).minDepth(v.minDepth()).maxDepth(v.maxDepth());
                 vkCmdSetViewport(commandBuffer, 0, viewport);
-                VkRect2D.Buffer scissor = VkRect2D.calloc(1, stack);
+                VkRect2D.Buffer scissor = VulkanFfm.structBuffer(arena, VkRect2D.SIZEOF, VkRect2D.ALIGNOF, 1, VkRect2D::create);
                 scissor.get(0).offset(o -> o.set(effective.x(), effective.y()))
                         .extent(e -> e.width(effective.width()).height(effective.height()));
                 vkCmdSetScissor(commandBuffer, 0, scissor);
@@ -177,8 +176,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
         if (offset >= vkBuffer.size()) throw new IllegalArgumentException("vertex buffer offset outside buffer");
         reference(vkBuffer);
         recordCommand(() -> {
-            try (MemoryStack stack = stackPush()) {
-                vkCmdBindVertexBuffers(commandBuffer, binding, stack.longs(vkBuffer.handle), stack.longs(offset));
+            try (Arena arena = Arena.ofConfined()) {
+                vkCmdBindVertexBuffers(commandBuffer, binding, VulkanFfm.longs(arena, vkBuffer.handle), VulkanFfm.longs(arena, offset));
             }
         });
         vertexBuffers.put(binding, new VertexBufferBinding(vkBuffer, offset));
@@ -218,9 +217,9 @@ final class VulkanCommandEncoder implements CommandEncoder {
         if (bindingSet.layout() != expected) throw new IllegalArgumentException("binding set layout does not match active state group");
         reference(bindingSet);
         recordCommand(() -> {
-            try (MemoryStack stack = stackPush()) {
+            try (Arena arena = Arena.ofConfined()) {
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, group,
-                        stack.longs(bindingSet.descriptorSet), null);
+                        VulkanFfm.longs(arena, bindingSet.descriptorSet), null);
             }
         });
         bindingSets.put(group, bindingSet);
@@ -266,8 +265,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
         int setCount = graphicsState.setLayouts.size();
         if (setCount == 0) return;
         recordCommand(() -> {
-            try (MemoryStack stack = stackPush()) {
-                var descriptorSets = stack.mallocLong(setCount);
+            try (Arena arena = Arena.ofConfined()) {
+                var descriptorSets = VulkanFfm.longs(arena, setCount);
                 for (int group = 0; group < setCount; group++) {
                     descriptorSets.put(group, bindingSets.get(group).descriptorSet);
                 }
@@ -370,8 +369,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
         reference(src);
         reference(dst);
         recordCommand(() -> {
-            try (MemoryStack stack = stackPush()) {
-                VkImageCopy.Buffer region = VkImageCopy.calloc(1, stack);
+            try (Arena arena = Arena.ofConfined()) {
+                VkImageCopy.Buffer region = VulkanFfm.structBuffer(arena, VkImageCopy.SIZEOF, VkImageCopy.ALIGNOF, 1, VkImageCopy::create);
                 region.get(0)
                         .srcSubresource(s -> s.aspectMask(VulkanMappings.imageAspect(src.format())).mipLevel(0).baseArrayLayer(0).layerCount(1))
                         .dstSubresource(s -> s.aspectMask(VulkanMappings.imageAspect(dst.format())).mipLevel(0).baseArrayLayer(0).layerCount(1))
@@ -398,8 +397,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
         validateTransition(actual, from, to, "texture");
         reference(vkTexture);
         recordCommand(() -> {
-            try (MemoryStack stack = stackPush()) {
-                VkImageMemoryBarrier2.Buffer barrier = VkImageMemoryBarrier2.calloc(1, stack);
+            try (Arena arena = Arena.ofConfined()) {
+                VkImageMemoryBarrier2.Buffer barrier = VulkanFfm.structBuffer(arena, VkImageMemoryBarrier2.SIZEOF, VkImageMemoryBarrier2.ALIGNOF, 1, VkImageMemoryBarrier2::create);
                 barrier.get(0)
                         .sType$Default()
                         .srcStageMask(VulkanMappings.stageMask(actual))
@@ -413,7 +412,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
                         .image(vkTexture.image)
                         .subresourceRange(r -> r.aspectMask(VulkanMappings.imageAspect(vkTexture.format()))
                                 .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
-                VkDependencyInfo dependency = VkDependencyInfo.calloc(stack)
+                VkDependencyInfo dependency = VulkanFfm.struct(arena, VkDependencyInfo.SIZEOF, VkDependencyInfo.ALIGNOF, VkDependencyInfo::create)
                         .sType$Default()
                         .pImageMemoryBarriers(barrier);
                 vkCmdPipelineBarrier2(commandBuffer, dependency);
@@ -436,8 +435,8 @@ final class VulkanCommandEncoder implements CommandEncoder {
         validateTransition(actual, from, to, "buffer");
         reference(vkBuffer);
         recordCommand(() -> {
-            try (MemoryStack stack = stackPush()) {
-                VkBufferMemoryBarrier2.Buffer barrier = VkBufferMemoryBarrier2.calloc(1, stack);
+            try (Arena arena = Arena.ofConfined()) {
+                VkBufferMemoryBarrier2.Buffer barrier = VulkanFfm.structBuffer(arena, VkBufferMemoryBarrier2.SIZEOF, VkBufferMemoryBarrier2.ALIGNOF, 1, VkBufferMemoryBarrier2::create);
                 barrier.get(0)
                         .sType$Default()
                         .srcStageMask(VulkanMappings.stageMask(actual))
@@ -449,7 +448,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
                         .buffer(vkBuffer.handle)
                         .offset(0)
                         .size(VK_WHOLE_SIZE);
-                VkDependencyInfo dependency = VkDependencyInfo.calloc(stack)
+                VkDependencyInfo dependency = VulkanFfm.struct(arena, VkDependencyInfo.SIZEOF, VkDependencyInfo.ALIGNOF, VkDependencyInfo::create)
                         .sType$Default()
                         .pBufferMemoryBarriers(barrier);
                 vkCmdPipelineBarrier2(commandBuffer, dependency);

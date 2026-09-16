@@ -1,7 +1,8 @@
 package io.github.antonschnfeld.drakon.graphics.spike;
 
-import org.lwjgl.system.MemoryStack;
-
+import java.lang.foreign.Arena;
+import java.lang.foreign.ValueLayout;
+import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 
 import static org.lwjgl.glfw.GLFW.*;
@@ -50,9 +51,11 @@ final class GlfwWindow implements AutoCloseable {
 
     private int framebufferExtent(boolean widthResult) {
         requireOpen();
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer width = stack.mallocInt(1);
-            IntBuffer height = stack.mallocInt(1);
+        try (Arena arena = Arena.ofConfined()) {
+            IntBuffer width = arena.allocate(ValueLayout.JAVA_INT).asByteBuffer()
+                    .order(ByteOrder.nativeOrder()).asIntBuffer();
+            IntBuffer height = arena.allocate(ValueLayout.JAVA_INT).asByteBuffer()
+                    .order(ByteOrder.nativeOrder()).asIntBuffer();
             glfwGetFramebufferSize(handle, width, height);
             return Math.max(widthResult ? width.get(0) : height.get(0), 1);
         }

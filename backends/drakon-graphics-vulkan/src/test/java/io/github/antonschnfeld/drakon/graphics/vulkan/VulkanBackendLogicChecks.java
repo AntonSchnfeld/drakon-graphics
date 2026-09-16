@@ -6,6 +6,12 @@ import io.github.antonschnfeld.drakon.graphics.resource.ScissorRect;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexFormat;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexInputRate;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexLayout;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.IntBuffer;
 
 /** Hardware-free checks for Vulkan submission-state and resource-lifetime bookkeeping. */
 public final class VulkanBackendLogicChecks {
@@ -25,6 +31,8 @@ public final class VulkanBackendLogicChecks {
         uniformAlignmentIsChecked();
         drawRangesAreChecked();
         transitionFromValidationFollowsConfig();
+        ffmScratchViewsHaveExactNativeLayout();
+        mappedCopyUsesTheSelectedRange();
         System.out.println("Vulkan backend logic checks passed.");
     }
 
@@ -187,6 +195,36 @@ public final class VulkanBackendLogicChecks {
                 false, ResourceState.UNDEFINED, ResourceState.VERTEX_READ, "buffer");
         expect(IllegalStateException.class, () -> VulkanValidation.validateTransitionFrom(
                 true, ResourceState.UNDEFINED, ResourceState.VERTEX_READ, "buffer"));
+    }
+
+    private static void ffmScratchViewsHaveExactNativeLayout() {
+        try (Arena arena = Arena.ofConfined()) {
+            IntBuffer ints = VulkanFfm.ints(arena, 3);
+            require(ints.capacity() == 3, "FFM IntBuffer capacity is wrong");
+            require(ints.order().equals(ByteOrder.nativeOrder()), "FFM IntBuffer byte order is not native");
+
+            MemorySegment storage = VulkanFfm.storage(arena, 96, 16);
+            require(storage.byteSize() == 96, "FFM scratch storage capacity is wrong");
+            require(storage.address() % 16 == 0, "FFM scratch storage is misaligned");
+        }
+    }
+
+    private static void mappedCopyUsesTheSelectedRange() {
+        ByteBuffer source = ByteBuffer.allocate(8);
+        for (int i = 0; i < source.capacity(); i++) source.put(i, (byte) (20 + i));
+        source.position(3).limit(7);
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment destination = arena.allocate(4, Byte.BYTES);
+            VulkanFfm.copyToBorrowed(source, destination.address(), destination.byteSize());
+            require(source.position() == 3, "mapped copy changed caller position");
+            require(source.limit() == 7, "mapped copy changed caller limit");
+            for (int i = 0; i < destination.byteSize(); i++) {
+                require(destination.get(ValueLayout.JAVA_BYTE, i) == (byte) (23 + i),
+                        "mapped copy changed bytes");
+            }
+            expect(IllegalArgumentException.class,
+                    () -> VulkanFfm.copyToBorrowed(source, destination.address(), 3));
+        }
     }
 
     private static void assertScissor(
