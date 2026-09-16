@@ -70,6 +70,7 @@ import static org.lwjgl.util.shaderc.Shaderc.*;
 public final class BackendSpikeMain {
     private static final int LARGE_HEAP_INITIALIZATION_BYTES = 1024 * 1024;
     private static final int DYNAMIC_STRESS_FRAMES = 240;
+    private static final double DYNAMIC_ANGULAR_SPEED = 4.5;
 
     private static final String VERTEX_GLSL = """
             #version 450
@@ -234,12 +235,15 @@ public final class BackendSpikeMain {
                                 DynamicMesh mesh = createDynamicMesh(
                                         device, target, dynamicVertex, dynamicFragment)) {
                             int copyWriteBinding = glGetInteger(GL_COPY_WRITE_BUFFER);
-                            runDynamicBufferStress(device, target, mesh, window::pollEvents, "OpenGL");
+                            long animationStartNanos = System.nanoTime();
+                            runDynamicBufferStress(
+                                    device, target, mesh, window::pollEvents, "OpenGL", animationStartNanos);
                             if (glGetInteger(GL_COPY_WRITE_BUFFER) != copyWriteBinding) {
                                 throw new AssertionError("OpenGL buffer writes changed external copy-write binding");
                             }
                             runDynamicWindowLoop(
-                                    device, target, mesh, window::shouldClose, window::pollEvents);
+                                    device, target, mesh, window::shouldClose, window::pollEvents,
+                                    animationStartNanos);
                         }
                     }
                 }
@@ -291,9 +295,12 @@ public final class BackendSpikeMain {
                                                 VULKAN_DYNAMIC_FRAGMENT_GLSL, shaderc_glsl_fragment_shader))));
                                 DynamicMesh mesh = createDynamicMesh(
                                         device, target, dynamicVertex, dynamicFragment)) {
-                            runDynamicBufferStress(device, target, mesh, window::pollEvents, "Vulkan");
+                            long animationStartNanos = System.nanoTime();
+                            runDynamicBufferStress(
+                                    device, target, mesh, window::pollEvents, "Vulkan", animationStartNanos);
                             runDynamicWindowLoop(
-                                    device, target, mesh, window::shouldClose, window::pollEvents);
+                                    device, target, mesh, window::shouldClose, window::pollEvents,
+                                    animationStartNanos);
                         }
                     }
                 }
@@ -617,20 +624,26 @@ public final class BackendSpikeMain {
             RenderTarget target,
             DynamicMesh mesh,
             Runnable pollEvents,
-            String backendName) {
+            String backendName,
+            long animationStartNanos) {
         Renderer renderer = new Renderer(device);
         renderer.execute(RenderPipeline.of(commands -> {
             commands.transition(mesh.vertexBuffer(), ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
             commands.transition(mesh.indexBuffer(), ResourceState.UNDEFINED, ResourceState.INDEX_READ);
             commands.transition(mesh.dynamicBuffer(), ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
         }));
-        for (int frame = 0; frame < DYNAMIC_STRESS_FRAMES; frame++) {
-            renderDynamicFrame(renderer, target, mesh, frame);
+        long stressStartNanos = System.nanoTime();
+        for (int submittedFrames = 0; submittedFrames < DYNAMIC_STRESS_FRAMES; submittedFrames++) {
+            renderDynamicFrame(renderer, target, mesh, animationPhase(animationStartNanos));
             device.present(target);
             pollEvents.run();
         }
-        System.out.println(backendName + " dynamic buffer stress passed: "
-                + DYNAMIC_STRESS_FRAMES + " ordered updates using one Buffer/BindingSet/GraphicsState.");
+        double stressSeconds = elapsedSeconds(stressStartNanos);
+        double framesPerSecond = DYNAMIC_STRESS_FRAMES / stressSeconds;
+        System.out.printf(Locale.ROOT,
+                "%s dynamic buffer stress passed: %d ordered updates using one "
+                        + "Buffer/BindingSet/GraphicsState in %.3f s (%.1f FPS).%n",
+                backendName, DYNAMIC_STRESS_FRAMES, stressSeconds, framesPerSecond);
     }
 
     private static void runDynamicWindowLoop(
@@ -638,19 +651,19 @@ public final class BackendSpikeMain {
             RenderTarget target,
             DynamicMesh mesh,
             BooleanSupplier shouldClose,
-            Runnable pollEvents) {
+            Runnable pollEvents,
+            long animationStartNanos) {
         Renderer renderer = new Renderer(device);
-        int frame = DYNAMIC_STRESS_FRAMES;
         while (!shouldClose.getAsBoolean()) {
-            renderDynamicFrame(renderer, target, mesh, frame++);
+            renderDynamicFrame(renderer, target, mesh, animationPhase(animationStartNanos));
             device.present(target);
             pollEvents.run();
         }
     }
 
     private static void renderDynamicFrame(
-            Renderer renderer, RenderTarget target, DynamicMesh mesh, int frame) {
-        ByteBuffer frameData = dynamicFrameData(frame);
+            Renderer renderer, RenderTarget target, DynamicMesh mesh, double phase) {
+        ByteBuffer frameData = dynamicFrameData(phase);
         RenderPass pass = commands -> {
             commands.writeBuffer(mesh.dynamicBuffer(), 0, frameData);
             // RenderingInfo is rebuilt because a presentation-backed target can
@@ -668,8 +681,15 @@ public final class BackendSpikeMain {
         renderer.execute(RenderPipeline.of(pass));
     }
 
-    private static ByteBuffer dynamicFrameData(int frame) {
-        float phase = frame * 0.075f;
+    private static double animationPhase(long animationStartNanos) {
+        return elapsedSeconds(animationStartNanos) * DYNAMIC_ANGULAR_SPEED;
+    }
+
+    private static double elapsedSeconds(long startNanos) {
+        return (System.nanoTime() - startNanos) * 1.0e-9;
+    }
+
+    private static ByteBuffer dynamicFrameData(double phase) {
         ByteBuffer data = ByteBuffer.allocate(24).order(ByteOrder.nativeOrder());
         data.position(4);
         data.putFloat(0.16f * (float) Math.sin(phase));
