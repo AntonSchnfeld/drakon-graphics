@@ -13,6 +13,7 @@ final class GlfwPlatform implements AutoCloseable {
     GlfwPlatform() {
         errorCallback = GLFWErrorCallback.createPrint(System.err).set();
         if (!glfwInit()) {
+            clearErrorCallback();
             errorCallback.free();
             throw new IllegalStateException("GLFW initialization failed");
         }
@@ -53,6 +54,13 @@ final class GlfwPlatform implements AutoCloseable {
         if (closed) return;
         closed = true;
         glfwTerminate();
+        clearErrorCallback();
         errorCallback.free();
+    }
+
+    private static void clearErrorCallback() {
+        // Use the raw LWJGL entry point so clearing does not resolve the old callback
+        // back into Java while its registration may already be invalid.
+        nglfwSetErrorCallback(0L);
     }
 }
