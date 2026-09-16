@@ -12,6 +12,15 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.util.List;
+import java.util.Set;
+
+import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
+import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
+import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+import static org.lwjgl.vulkan.EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 
 /** Hardware-free checks for Vulkan submission-state and resource-lifetime bookkeeping. */
 public final class VulkanBackendLogicChecks {
@@ -31,9 +40,72 @@ public final class VulkanBackendLogicChecks {
         uniformAlignmentIsChecked();
         drawRangesAreChecked();
         transitionFromValidationFollowsConfig();
+        nativeDebugSelectionFollowsConfigAndAvailability();
+        presentationExtensionsAreComposedWithoutDuplicates();
+        nativeDebugMessagesAreFilteredAndFormatted();
         ffmScratchViewsHaveExactNativeLayout();
         mappedCopyUsesTheSelectedRange();
         System.out.println("Vulkan backend logic checks passed.");
+    }
+
+    private static void nativeDebugSelectionFollowsConfigAndAvailability() {
+        Set<String> allLayers = Set.of(VulkanNativeDebug.VALIDATION_LAYER);
+        Set<String> allExtensions = Set.of(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
+        VulkanNativeDebug.Selection disabled = VulkanNativeDebug.select(
+                false, List.of(), allLayers, allExtensions);
+        require(disabled.layers().isEmpty(), "default mode selected the validation layer");
+        require(disabled.extensions().isEmpty(), "default mode selected debug utils");
+        require(!disabled.debugUtils(), "default mode requested a debug messenger");
+
+        VulkanNativeDebug.Selection available = VulkanNativeDebug.select(
+                true, List.of(), allLayers, allExtensions);
+        require(available.layers().equals(List.of(VulkanNativeDebug.VALIDATION_LAYER)),
+                "debug mode did not select the available validation layer");
+        require(available.extensions().equals(List.of(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)),
+                "debug mode did not select available debug utils");
+        require(available.debugUtils(), "debug mode did not request a messenger");
+
+        VulkanNativeDebug.Selection missingLayer = VulkanNativeDebug.select(
+                true, List.of(), Set.of(), allExtensions);
+        require(missingLayer.layers().isEmpty(), "unavailable validation layer was selected");
+        require(missingLayer.debugUtils(), "missing validation layer incorrectly disabled debug utils");
+
+        VulkanNativeDebug.Selection missingDebugUtils = VulkanNativeDebug.select(
+                true, List.of(), allLayers, Set.of());
+        require(missingDebugUtils.validationLayer(), "missing debug utils incorrectly disabled validation layer");
+        require(!missingDebugUtils.debugUtils(), "unavailable debug utils requested a messenger");
+    }
+
+    private static void presentationExtensionsAreComposedWithoutDuplicates() {
+        String surface = "VK_KHR_surface";
+        VulkanNativeDebug.Selection selection = VulkanNativeDebug.select(
+                true,
+                List.of(surface, surface, VK_EXT_DEBUG_UTILS_EXTENSION_NAME),
+                Set.of(VulkanNativeDebug.VALIDATION_LAYER),
+                Set.of(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
+        require(selection.extensions().equals(List.of(surface, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)),
+                "presentation/debug extensions were not composed in stable unique order");
+    }
+
+    private static void nativeDebugMessagesAreFilteredAndFormatted() {
+        require(VulkanNativeDebug.accepts(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT),
+                "Vulkan warning was filtered");
+        require(VulkanNativeDebug.accepts(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT),
+                "Vulkan error was filtered");
+        require(!VulkanNativeDebug.accepts(VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT),
+                "Vulkan verbose message was accepted");
+        require(!VulkanNativeDebug.accepts(VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT),
+                "Vulkan info message was accepted");
+        String formatted = VulkanNativeDebug.format(
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
+                "VUID-test",
+                17,
+                "bad\nstate");
+        require(formatted.contains("[ERROR][VALIDATION]"), "Vulkan message omitted severity/type");
+        require(formatted.contains("VUID-test(17)"), "Vulkan message omitted its ID");
+        require(!formatted.contains("\n"), "Vulkan message was not compacted");
     }
 
     private static void recordingStateIsLocalUntilCommit() {
