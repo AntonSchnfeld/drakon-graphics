@@ -188,8 +188,16 @@ public final class VulkanDevice implements GraphicsDevice {
                     throw failure;
                 }
             } catch (RuntimeException | Error failure) {
-                nativeDebug.close(instance);
-                if (instance != null) vkDestroyInstance(instance, null);
+                if (instance != null) {
+                    nativeDebug.destroyMessenger(instance);
+                    try {
+                        vkDestroyInstance(instance, null);
+                    } finally {
+                        nativeDebug.releaseCallback();
+                    }
+                } else {
+                    nativeDebug.releaseCallback();
+                }
                 throw failure;
             }
         }
@@ -290,8 +298,18 @@ public final class VulkanDevice implements GraphicsDevice {
                 if (device != null) vkDestroyDevice(device, null);
             }
             if (surface != 0L && instance != null) vkDestroySurfaceKHR(instance, surface, null);
-            if (nativeDebug != null && result == null) nativeDebug.close(instance);
-            if (instance != null) vkDestroyInstance(instance, null);
+            if (nativeDebug != null && result == null) {
+                if (instance != null) nativeDebug.destroyMessenger(instance);
+                if (instance != null) {
+                    try {
+                        vkDestroyInstance(instance, null);
+                    } finally {
+                        nativeDebug.releaseCallback();
+                    }
+                } else {
+                    nativeDebug.releaseCallback();
+                }
+            }
             throw failure;
         }
     }
@@ -1609,8 +1627,12 @@ public final class VulkanDevice implements GraphicsDevice {
         vkDestroyCommandPool(device, commandPool, null);
         closed = true;
         vkDestroyDevice(device, null);
-        nativeDebug.close(instance);
-        vkDestroyInstance(instance, null);
+        nativeDebug.destroyMessenger(instance);
+        try {
+            vkDestroyInstance(instance, null);
+        } finally {
+            nativeDebug.releaseCallback();
+        }
     }
 
     static void check(int result, String operation) {

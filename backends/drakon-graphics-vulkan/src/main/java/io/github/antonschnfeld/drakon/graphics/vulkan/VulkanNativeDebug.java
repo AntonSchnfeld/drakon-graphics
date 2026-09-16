@@ -45,7 +45,7 @@ final class VulkanNativeDebug {
     private final Selection selection;
     private final VkDebugUtilsMessengerCallbackEXT callback;
     private long messenger;
-    private boolean closed;
+    private boolean callbackReleased;
 
     private VulkanNativeDebug(Selection selection, VkDebugUtilsMessengerCallbackEXT callback) {
         this.selection = selection;
@@ -114,13 +114,18 @@ final class VulkanNativeDebug {
         messenger = handle.get(0);
     }
 
-    void close(VkInstance instance) {
-        if (closed) return;
-        closed = true;
+    /** Destroys the instance-owned messenger while retaining the callback. */
+    void destroyMessenger(VkInstance instance) {
         if (messenger != 0L) {
             vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
             messenger = 0L;
         }
+    }
+
+    /** Releases the callback after its instance pNext callback can no longer run. */
+    void releaseCallback() {
+        if (callbackReleased) return;
+        callbackReleased = true;
         if (callback != null) callback.free();
     }
 
