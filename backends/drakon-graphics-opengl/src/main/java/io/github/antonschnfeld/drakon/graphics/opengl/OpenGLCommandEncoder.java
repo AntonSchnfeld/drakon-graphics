@@ -6,11 +6,13 @@ import io.github.antonschnfeld.drakon.graphics.resource.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.nio.ByteBuffer;
 
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL15C.*;
 import static org.lwjgl.opengl.GL20C.glUseProgram;
 import static org.lwjgl.opengl.GL30C.*;
+import static org.lwjgl.opengl.GL31C.*;
 import static org.lwjgl.opengl.GL42C.*;
 import static org.lwjgl.opengl.GL43C.*;
 
@@ -446,6 +448,38 @@ final class OpenGLCommandEncoder implements CommandEncoder {
                     dst.handle, GL_TEXTURE_2D, 0, 0, 0, 0,
                     src.width(), src.height(), 1);
         });
+    }
+
+    @Override
+    public void writeBuffer(Buffer buffer, long offset, ByteBuffer data) {
+        requireRecording();
+        Objects.requireNonNull(buffer, "buffer");
+        Objects.requireNonNull(data, "data");
+        if (rendering) throw new IllegalStateException("writeBuffer is not allowed inside rendering");
+        OpenGLBuffer destination = owned(buffer, OpenGLBuffer.class, "buffer");
+        byte[] snapshot = OpenGLBufferUpdates.snapshot(destination.size(), offset, data);
+        commands.add(context -> {
+            destination.requireAlive();
+            requireWritableBufferState(destination.state);
+            int previous = glGetInteger(GL_COPY_WRITE_BUFFER_BINDING);
+            try {
+                glBindBuffer(GL_COPY_WRITE_BUFFER, destination.handle);
+                OpenGLUploadMemory.withNativeBuffer(
+                        ByteBuffer.wrap(snapshot),
+                        upload -> glBufferSubData(GL_COPY_WRITE_BUFFER, offset, upload));
+            } finally {
+                glBindBuffer(GL_COPY_WRITE_BUFFER, previous);
+            }
+        });
+    }
+
+    private static void requireWritableBufferState(ResourceState state) {
+        if (state != ResourceState.VERTEX_READ
+                && state != ResourceState.INDEX_READ
+                && state != ResourceState.UNIFORM_READ) {
+            throw new IllegalStateException(
+                    "buffer write requires VERTEX_READ, INDEX_READ, or UNIFORM_READ");
+        }
     }
 
     @Override

@@ -5,6 +5,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.*;
 import org.lwjgl.vulkan.*;
 
 import java.lang.foreign.Arena;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -381,6 +382,90 @@ final class VulkanCommandEncoder implements CommandEncoder {
                         region);
             }
         });
+    }
+
+    @Override
+    public void writeBuffer(Buffer buffer, long offset, ByteBuffer data) {
+        Objects.requireNonNull(buffer, "buffer");
+        Objects.requireNonNull(data, "data");
+        requireRecording();
+        if (rendering) throw new IllegalStateException("writeBuffer is not allowed inside rendering");
+        VulkanBuffer destination = device.owned(buffer, VulkanBuffer.class, "buffer");
+        int byteCount = data.remaining();
+        VulkanBufferUpdates.validateRange(destination.size(), offset, byteCount);
+        ResourceState state = states.effectiveState(destination);
+        requireWritableBufferState(state);
+        reference(destination);
+
+        ByteBuffer selected = data.slice();
+        recordCommand(() -> {
+            recordBufferWriteBarrier(
+                    destination, offset, byteCount,
+                    VulkanMappings.stageMask(state), VulkanMappings.accessMask(state),
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            VulkanBufferUpdates.forEachChunk(offset, byteCount, (chunkOffset, chunkSize) -> {
+                int sourceOffset = Math.toIntExact(chunkOffset - offset);
+                ByteBuffer chunk = selected.duplicate();
+                chunk.position(sourceOffset).limit(sourceOffset + chunkSize);
+                try (Arena arena = Arena.ofConfined()) {
+                    vkCmdUpdateBuffer(
+                            commandBuffer,
+                            destination.handle,
+                            chunkOffset,
+                            VulkanFfm.nativeCopy(arena, chunk, Integer.BYTES));
+                }
+            });
+            recordBufferWriteBarrier(
+                    destination, offset, byteCount,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VulkanMappings.stageMask(state), VulkanMappings.accessMask(state));
+        });
+    }
+
+    private void recordBufferWriteBarrier(
+            VulkanBuffer buffer,
+            long offset,
+            long size,
+            long sourceStage,
+            long sourceAccess,
+            long destinationStage,
+            long destinationAccess) {
+        try (Arena arena = Arena.ofConfined()) {
+            VkBufferMemoryBarrier2.Buffer barrier = VulkanFfm.structBuffer(
+                    arena,
+                    VkBufferMemoryBarrier2.SIZEOF,
+                    VkBufferMemoryBarrier2.ALIGNOF,
+                    1,
+                    VkBufferMemoryBarrier2::create);
+            barrier.get(0)
+                    .sType$Default()
+                    .srcStageMask(sourceStage)
+                    .srcAccessMask(sourceAccess)
+                    .dstStageMask(destinationStage)
+                    .dstAccessMask(destinationAccess)
+                    .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .buffer(buffer.handle)
+                    .offset(offset)
+                    .size(size);
+            VkDependencyInfo dependency = VulkanFfm.struct(
+                    arena,
+                    VkDependencyInfo.SIZEOF,
+                    VkDependencyInfo.ALIGNOF,
+                    VkDependencyInfo::create)
+                    .sType$Default()
+                    .pBufferMemoryBarriers(barrier);
+            vkCmdPipelineBarrier2(commandBuffer, dependency);
+        }
+    }
+
+    private static void requireWritableBufferState(ResourceState state) {
+        if (state != ResourceState.VERTEX_READ
+                && state != ResourceState.INDEX_READ
+                && state != ResourceState.UNIFORM_READ) {
+            throw new IllegalStateException(
+                    "buffer write requires VERTEX_READ, INDEX_READ, or UNIFORM_READ");
+        }
     }
 
     @Override

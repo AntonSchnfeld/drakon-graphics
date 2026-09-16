@@ -12,6 +12,7 @@ import io.github.antonschnfeld.drakon.graphics.probe.ProbePresentationTargets;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbeLifecycleChecks;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbeTextureInitializationChecks;
 import io.github.antonschnfeld.drakon.graphics.probe.ProbeValidationParityChecks;
+import io.github.antonschnfeld.drakon.graphics.probe.ProbeBufferWriteChecks;
 import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 import io.github.antonschnfeld.drakon.graphics.shader.*;
@@ -37,6 +38,7 @@ public final class ApiContractChecks {
         ProbeTextureInitializationChecks.run();
         ProbeLifecycleChecks.run();
         ProbeValidationParityChecks.run();
+        ProbeBufferWriteChecks.run();
         checkBackendContracts("opengl");
         checkBackendContracts("vulkan");
     }
