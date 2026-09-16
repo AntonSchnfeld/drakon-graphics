@@ -1,6 +1,11 @@
 package io.github.antonschnfeld.drakon.graphics.vulkan;
 
 import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
+import io.github.antonschnfeld.drakon.graphics.resource.IndexType;
+import io.github.antonschnfeld.drakon.graphics.resource.ScissorRect;
+import io.github.antonschnfeld.drakon.graphics.resource.VertexFormat;
+import io.github.antonschnfeld.drakon.graphics.resource.VertexInputRate;
+import io.github.antonschnfeld.drakon.graphics.resource.VertexLayout;
 
 /** Hardware-free checks for Vulkan submission-state and resource-lifetime bookkeeping. */
 public final class VulkanBackendLogicChecks {
@@ -16,16 +21,20 @@ public final class VulkanBackendLogicChecks {
         resourceLifetimeDefersNativeDeletion();
         resourceLifetimeIsIdempotentAndExactlyOnce();
         commandOwnershipTransfersOrReleasesExactlyOnce();
+        scissorClippingIsSafe();
+        uniformAlignmentIsChecked();
+        drawRangesAreChecked();
+        transitionFromValidationFollowsConfig();
         System.out.println("Vulkan backend logic checks passed.");
     }
 
     private static void recordingStateIsLocalUntilCommit() {
         FakeStateResource resource = new FakeStateResource(ResourceState.UNDEFINED);
         VulkanRecordingState recording = new VulkanRecordingState();
-        recording.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_DST);
+        recording.transition(resource, ResourceState.COPY_DST);
         require(resource.committedState() == ResourceState.UNDEFINED, "recording mutated committed state");
         require(recording.effectiveState(resource) == ResourceState.COPY_DST, "recording state did not advance");
-        recording.transition(resource, ResourceState.COPY_DST, ResourceState.COPY_SRC);
+        recording.transition(resource, ResourceState.COPY_SRC);
         require(recording.effectiveState(resource) == ResourceState.COPY_SRC, "local transitions did not compose");
 
         VulkanCommandState finished = recording.finish();
@@ -40,8 +49,8 @@ public final class VulkanBackendLogicChecks {
         FakeStateResource resource = new FakeStateResource(ResourceState.UNDEFINED);
         VulkanRecordingState first = new VulkanRecordingState();
         VulkanRecordingState stale = new VulkanRecordingState();
-        first.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_DST);
-        stale.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_SRC);
+        first.transition(resource, ResourceState.COPY_DST);
+        stale.transition(resource, ResourceState.COPY_SRC);
 
         VulkanCommandState firstList = first.finish();
         VulkanCommandState staleList = stale.finish();
@@ -54,7 +63,7 @@ public final class VulkanBackendLogicChecks {
     private static void rejectedRecordingDoesNotCommit() {
         FakeStateResource resource = new FakeStateResource(ResourceState.UNDEFINED);
         VulkanRecordingState recording = new VulkanRecordingState();
-        recording.transition(resource, ResourceState.UNDEFINED, ResourceState.COPY_DST);
+        recording.transition(resource, ResourceState.COPY_DST);
         VulkanCommandState list = recording.finish();
         resource.commitState(ResourceState.COPY_SRC);
 
@@ -121,6 +130,78 @@ public final class VulkanBackendLogicChecks {
         submitted.transferToDevice();
         require(!submitted.closeAndClaimRelease(), "submitted-list close reclaimed device ownership");
         require(!submitted.failAndClaimRelease(), "submitted list transitioned back to failed ownership");
+    }
+
+    private static void scissorClippingIsSafe() {
+        assertScissor(new ScissorRect(0, 0, 100, 80), 100, 80, 0, 0, 100, 80);
+        assertScissor(new ScissorRect(-10, 5, 30, 20), 100, 80, 0, 5, 20, 20);
+        assertScissor(new ScissorRect(5, -10, 20, 30), 100, 80, 5, 0, 20, 20);
+        assertScissor(new ScissorRect(90, 5, 30, 20), 100, 80, 90, 5, 10, 20);
+        assertScissor(new ScissorRect(5, 70, 20, 30), 100, 80, 5, 70, 20, 10);
+        assertScissor(new ScissorRect(-10, -20, 130, 120), 100, 80, 0, 0, 100, 80);
+        assertScissor(new ScissorRect(-30, -20, 10, 10), 100, 80, 0, 0, 0, 0);
+        assertScissor(new ScissorRect(120, 90, 10, 10), 100, 80, 100, 80, 0, 0);
+        assertScissor(new ScissorRect(Integer.MAX_VALUE - 4, 0, 10, 10),
+                100, 80, 100, 0, 0, 10);
+    }
+
+    private static void uniformAlignmentIsChecked() {
+        VulkanValidation.validateUniformOffset(0, 256);
+        VulkanValidation.validateUniformOffset(512, 256);
+        expect(IllegalArgumentException.class, () -> VulkanValidation.validateUniformOffset(4, 256));
+    }
+
+    private static void drawRangesAreChecked() {
+        VertexLayout layout = VertexLayout.builder()
+                .binding(0, 16, VertexInputRate.PER_VERTEX)
+                .attribute(0, 0, VertexFormat.FLOAT2, 0)
+                .attribute(1, 0, VertexFormat.FLOAT2, 8)
+                .build();
+        VulkanValidation.validateVertexRange(
+                64, 0, layout.bindings().get(0), layout.attributes(), false, 4, 1, 0, 0);
+        expect(IllegalArgumentException.class, () -> VulkanValidation.validateVertexRange(
+                64, 0, layout.bindings().get(0), layout.attributes(), false, 4, 1, 1, 0));
+        expect(IllegalArgumentException.class, () -> VulkanValidation.validateVertexRange(
+                Long.MAX_VALUE, Long.MAX_VALUE - 4, layout.bindings().get(0),
+                layout.attributes(), false, 2, 1, 0, 0));
+
+        VertexLayout instances = VertexLayout.builder()
+                .binding(1, 16, VertexInputRate.PER_INSTANCE)
+                .attribute(2, 1, VertexFormat.FLOAT4, 0)
+                .build();
+        VulkanValidation.validateVertexRange(
+                80, 0, instances.bindings().get(0), instances.attributes(), true, 1, 2, 3, 3);
+        expect(IllegalArgumentException.class, () -> VulkanValidation.validateVertexRange(
+                79, 0, instances.bindings().get(0), instances.attributes(), true, 1, 2, 3, 3));
+
+        VulkanValidation.validateIndexRange(12, 0, IndexType.UINT16, 0, 6);
+        expect(IllegalArgumentException.class,
+                () -> VulkanValidation.validateIndexRange(12, 0, IndexType.UINT16, 6, 1));
+        expect(IllegalArgumentException.class,
+                () -> VulkanValidation.validateIndexRange(Long.MAX_VALUE, Long.MAX_VALUE - 1,
+                        IndexType.UINT32, Integer.MAX_VALUE, 1));
+    }
+
+    private static void transitionFromValidationFollowsConfig() {
+        VulkanValidation.validateTransitionFrom(
+                false, ResourceState.UNDEFINED, ResourceState.VERTEX_READ, "buffer");
+        expect(IllegalStateException.class, () -> VulkanValidation.validateTransitionFrom(
+                true, ResourceState.UNDEFINED, ResourceState.VERTEX_READ, "buffer"));
+    }
+
+    private static void assertScissor(
+            ScissorRect input,
+            int targetWidth,
+            int targetHeight,
+            int x,
+            int y,
+            int width,
+            int height) {
+        VulkanValidation.ClippedScissor expected =
+                new VulkanValidation.ClippedScissor(x, y, width, height);
+        VulkanValidation.ClippedScissor actual =
+                VulkanValidation.clipScissor(input, targetWidth, targetHeight);
+        require(expected.equals(actual), "expected " + expected + " but got " + actual);
     }
 
     private static void require(boolean condition, String message) {

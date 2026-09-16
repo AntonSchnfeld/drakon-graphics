@@ -47,13 +47,13 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         Objects.requireNonNull(info, "info");
         if (rendering) throw new IllegalStateException("rendering scope is already active");
         OpenGLRenderTargetAccess target = device.ownedTarget(info.target(), "render target");
-        validateAttachmentStates(target);
         rendering = true;
         commands.add(context -> beginRenderingNow(context, target, info));
     }
 
-    private void validateAttachmentStates(OpenGLRenderTargetAccess target) {
-        if (!validation || !(target instanceof OpenGLRenderTarget internal)) return;
+    private static void validateAttachmentStates(OpenGLRenderTargetAccess target) {
+        if (!(target instanceof OpenGLRenderTarget internal)) return;
+        internal.requireAttachmentsAlive();
         for (OpenGLTexture color : internal.colors()) {
             if (color.state != ResourceState.COLOR_ATTACHMENT_WRITE) {
                 throw new IllegalStateException("color attachment is not in COLOR_ATTACHMENT_WRITE");
@@ -68,19 +68,23 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             OpenGLExecutionContext context,
             OpenGLRenderTargetAccess target,
             RenderingInfo info) {
+        validateAttachmentStates(target);
+        int targetWidth = target.width();
+        int targetHeight = target.height();
+        OpenGLValidation.ClippedScissor effective = OpenGLValidation.clipScissor(
+                info.scissor(), targetWidth, targetHeight);
         context.renderTarget = target;
         context.renderingInfo = info;
         glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer());
 
         Viewport viewport = info.viewport();
-        int viewportY = Math.round(target.height() - (viewport.y() + viewport.height()));
+        int viewportY = Math.round(targetHeight - (viewport.y() + viewport.height()));
         glViewport(Math.round(viewport.x()), viewportY, Math.round(viewport.width()), Math.round(viewport.height()));
         glDepthRange(viewport.minDepth(), viewport.maxDepth());
 
-        ScissorRect scissor = info.scissor();
-        int scissorY = target.height() - (scissor.y() + scissor.height());
+        int scissorY = targetHeight - (effective.y() + effective.height());
         glEnable(GL_SCISSOR_TEST);
-        glScissor(scissor.x(), scissorY, scissor.width(), scissor.height());
+        glScissor(effective.x(), scissorY, effective.width(), effective.height());
 
         List<Integer> invalidateAtStart = new ArrayList<>();
         for (int i = 0; i < info.colors().size(); i++) {
@@ -140,7 +144,8 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     @Override
     public void setGraphicsState(GraphicsState state) {
         requireRecording();
-        OpenGLGraphicsState next = owned(state, OpenGLGraphicsState.class, "graphics state");
+        OpenGLGraphicsState next = owned(
+                Objects.requireNonNull(state, "state"), OpenGLGraphicsState.class, "graphics state");
         graphicsState = next;
         commands.add(context -> {
             next.requireAlive();
@@ -181,6 +186,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     @Override
     public void setVertexBuffer(int binding, Buffer buffer, long offset) {
         requireRecording();
+        Objects.requireNonNull(buffer, "buffer");
         if (binding < 0 || offset < 0) throw new IllegalArgumentException("binding and offset must be non-negative");
         OpenGLBuffer glBuffer = owned(buffer, OpenGLBuffer.class, "vertex buffer");
         if (!glBuffer.usage().contains(BufferUsage.VERTEX)) throw new IllegalArgumentException("buffer lacks VERTEX usage");
@@ -191,6 +197,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     @Override
     public void setIndexBuffer(Buffer buffer, IndexType indexType, long offset) {
         requireRecording();
+        Objects.requireNonNull(buffer, "buffer");
         Objects.requireNonNull(indexType, "indexType");
         OpenGLBuffer glBuffer = owned(buffer, OpenGLBuffer.class, "index buffer");
         if (!glBuffer.usage().contains(BufferUsage.INDEX)) throw new IllegalArgumentException("buffer lacks INDEX usage");
@@ -207,6 +214,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     @Override
     public void bindSet(int group, BindingSet set) {
         requireRecording();
+        Objects.requireNonNull(set, "set");
         if (group < 0) throw new IllegalArgumentException("group must be non-negative");
         OpenGLBindingSet bindingSet = owned(set, OpenGLBindingSet.class, "binding set");
         if (graphicsState == null) throw new IllegalStateException("bindSet requires an active graphics state");
@@ -219,17 +227,25 @@ final class OpenGLCommandEncoder implements CommandEncoder {
 
     private static void bindSetNow(OpenGLExecutionContext context, int group, OpenGLBindingSet set) {
         if (context.graphicsState == null) throw new IllegalStateException("graphics state missing at execution");
+        context.graphicsState.requireAlive();
+        set.requireAlive();
         OpenGLBindingPlan plan = context.graphicsState.bindings;
         if (set.layout() != plan.layout(group)) throw new IllegalStateException("binding layout changed incompatibly");
-        for (Binding<?> binding : set.layout().bindings()) {
+        validateBindingSetResources(set);
+        applyNativeBindings(plan, group, set);
+        context.bindingSets.put(group, set);
+    }
+
+    private static void applyNativeBindings(OpenGLBindingPlan plan, int group, OpenGLBindingSet set) {
+        for (OpenGLBindingPlan.NativeBinding nativeBinding : plan.nativeBindings(group)) {
+            Binding<?> binding = nativeBinding.binding();
             Object value = set.descriptor.values().get(binding);
-            int slot = plan.slot(binding);
+            int slot = nativeBinding.slot();
             switch (binding.type()) {
                 case SAMPLED_TEXTURE -> {
                     TextureBinding sampled = (TextureBinding) value;
                     OpenGLTexture texture = (OpenGLTexture) sampled.texture();
                     OpenGLSampler sampler = (OpenGLSampler) sampled.sampler();
-                    requireExactState(texture.state, ResourceState.SAMPLED_READ, "sampled texture");
                     glActiveTexture(GL_TEXTURE0 + slot);
                     glBindTexture(GL_TEXTURE_2D, texture.handle);
                     glBindSampler(slot, sampler.handle);
@@ -237,7 +253,6 @@ final class OpenGLCommandEncoder implements CommandEncoder {
                 case UNIFORM_BUFFER -> {
                     BufferBinding range = (BufferBinding) value;
                     OpenGLBuffer buffer = (OpenGLBuffer) range.buffer();
-                    requireExactState(buffer.state, ResourceState.UNIFORM_READ, "uniform buffer");
                     glBindBufferRange(
                             OpenGLMappings.bufferTarget(binding.type()),
                             slot,
@@ -249,14 +264,29 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         }
     }
 
-    private static void requireExactState(ResourceState actual, ResourceState expected, String label) {
-        if (actual != expected) {
-            throw new IllegalStateException(label + " requires " + expected + " but is " + actual);
+    private static void validateBindingSetResources(OpenGLBindingSet set) {
+        for (Binding<?> binding : set.descriptor.layout().bindings()) {
+            Object value = set.descriptor.values().get(binding);
+            switch (binding.type()) {
+                case SAMPLED_TEXTURE -> {
+                    TextureBinding sampled = (TextureBinding) value;
+                    OpenGLTexture texture = (OpenGLTexture) sampled.texture();
+                    OpenGLSampler sampler = (OpenGLSampler) sampled.sampler();
+                    texture.requireAlive();
+                    sampler.requireAlive();
+                    requireExactState(texture.state, ResourceState.SAMPLED_READ, "sampled texture");
+                }
+                case UNIFORM_BUFFER -> {
+                    OpenGLBuffer buffer = (OpenGLBuffer) ((BufferBinding) value).buffer();
+                    buffer.requireAlive();
+                    requireExactState(buffer.state, ResourceState.UNIFORM_READ, "uniform buffer");
+                }
+            }
         }
     }
 
-    private static void requireState(ResourceState actual, ResourceState expected, String label) {
-        if (actual != ResourceState.UNDEFINED && actual != expected) {
+    private static void requireExactState(ResourceState actual, ResourceState expected, String label) {
+        if (actual != expected) {
             throw new IllegalStateException(label + " requires " + expected + " but is " + actual);
         }
     }
@@ -267,7 +297,8 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         if (!rendering || graphicsState == null) throw new IllegalStateException("draw requires rendering and graphics state");
         if (vertexCount <= 0 || instanceCount <= 0 || firstVertex < 0 || firstInstance < 0) throw new IllegalArgumentException("invalid draw arguments");
         commands.add(context -> {
-            validateDrawContext(context);
+            validateDrawContext(
+                    context, false, vertexCount, instanceCount, firstVertex, firstInstance);
             bindVertexBuffers(context);
             glDrawArraysInstancedBaseInstance(
                     OpenGLMappings.primitive(context.graphicsState.descriptor.topology()),
@@ -284,11 +315,9 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         if (!rendering || graphicsState == null) throw new IllegalStateException("indexed draw requires rendering and graphics state");
         if (indexCount <= 0 || instanceCount <= 0 || firstIndex < 0 || firstInstance < 0) throw new IllegalArgumentException("invalid indexed draw arguments");
         commands.add(context -> {
-            validateDrawContext(context);
+            validateDrawContext(
+                    context, true, indexCount, instanceCount, firstIndex, firstInstance);
             if (context.indexBuffer == null) throw new IllegalStateException("no index buffer is bound");
-            if (context.indexBuffer.state != ResourceState.UNDEFINED && context.indexBuffer.state != ResourceState.INDEX_READ) {
-                throw new IllegalStateException("index buffer is not in INDEX_READ");
-            }
             bindVertexBuffers(context);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, context.indexBuffer.handle);
             long pointer = context.indexOffset + (long) firstIndex * context.indexType.bytes();
@@ -303,23 +332,92 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         });
     }
 
-    private static void validateDrawContext(OpenGLExecutionContext context) {
+    private static void validateDrawContext(
+            OpenGLExecutionContext context,
+            boolean indexed,
+            int count,
+            int instanceCount,
+            int first,
+            int firstInstance) {
         if (context.renderTarget == null || context.graphicsState == null) throw new IllegalStateException("draw state missing at execution");
+        context.graphicsState.requireAlive();
+        context.renderTarget.width();
+        if (context.renderTarget instanceof OpenGLRenderTarget internal) {
+            internal.requireAttachmentsAlive();
+        }
         if (!context.graphicsState.descriptor.colorFormats().equals(context.renderTarget.colorFormats())) {
             throw new IllegalStateException("graphics-state color formats do not match render target");
         }
         if (!context.graphicsState.descriptor.depthFormat().equals(java.util.Optional.ofNullable(context.renderTarget.depthFormat()))) {
             throw new IllegalStateException("graphics-state depth format does not match render target");
         }
+        validateRequiredBindingSets(context);
+        validateVertexBuffers(
+                context, indexed, count, instanceCount, first, firstInstance);
+        if (indexed) validateIndexBuffer(context, first, count);
+        rebindRequiredBindingSets(context);
+    }
+
+    private static void validateRequiredBindingSets(OpenGLExecutionContext context) {
+        OpenGLBindingPlan plan = context.graphicsState.bindings;
+        for (int group = 0; group < plan.layoutCount(); group++) {
+            OpenGLBindingSet set = context.bindingSets.get(group);
+            if (set == null || set.layout() != plan.layout(group)) {
+                throw new IllegalStateException("missing compatible binding set for group " + group);
+            }
+            set.requireAlive();
+            validateBindingSetResources(set);
+        }
+    }
+
+    private static void rebindRequiredBindingSets(OpenGLExecutionContext context) {
+        OpenGLBindingPlan plan = context.graphicsState.bindings;
+        for (int group = 0; group < plan.layoutCount(); group++) {
+            applyNativeBindings(plan, group, context.bindingSets.get(group));
+        }
+    }
+
+    private static void validateVertexBuffers(
+            OpenGLExecutionContext context,
+            boolean indexed,
+            int count,
+            int instanceCount,
+            int first,
+            int firstInstance) {
+        VertexLayout layout = context.graphicsState.descriptor.vertexLayout();
+        for (VertexBinding binding : layout.bindings()) {
+            OpenGLExecutionContext.VertexBufferBinding value = context.vertexBuffers.get(binding.binding());
+            if (value == null) throw new IllegalStateException("vertex binding " + binding.binding() + " has no buffer");
+            value.buffer().requireAlive();
+            requireExactState(value.buffer().state, ResourceState.VERTEX_READ, "vertex buffer");
+            OpenGLValidation.validateVertexRange(
+                    value.buffer().size(),
+                    value.offset(),
+                    binding,
+                    layout.attributes(),
+                    indexed,
+                    indexed ? 1 : count,
+                    instanceCount,
+                    indexed ? 0 : first,
+                    firstInstance);
+        }
+    }
+
+    private static void validateIndexBuffer(OpenGLExecutionContext context, int firstIndex, int indexCount) {
+        if (context.indexBuffer == null) throw new IllegalStateException("no index buffer is bound");
+        context.indexBuffer.requireAlive();
+        requireExactState(context.indexBuffer.state, ResourceState.INDEX_READ, "index buffer");
+        OpenGLValidation.validateIndexRange(
+                context.indexBuffer.size(),
+                context.indexOffset,
+                context.indexType,
+                firstIndex,
+                indexCount);
     }
 
     private static void bindVertexBuffers(OpenGLExecutionContext context) {
         for (VertexBinding binding : context.graphicsState.descriptor.vertexLayout().bindings()) {
             OpenGLExecutionContext.VertexBufferBinding value = context.vertexBuffers.get(binding.binding());
-            if (value == null) throw new IllegalStateException("vertex binding " + binding.binding() + " has no buffer");
-            if (value.buffer().state != ResourceState.UNDEFINED && value.buffer().state != ResourceState.VERTEX_READ) {
-                throw new IllegalStateException("vertex buffer is not in VERTEX_READ");
-            }
             glBindVertexBuffer(binding.binding(), value.buffer().handle, value.offset(), binding.stride());
         }
     }
@@ -327,6 +425,8 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     @Override
     public void copyTexture(Texture source, Texture destination) {
         requireRecording();
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(destination, "destination");
         if (rendering) throw new IllegalStateException("copyTexture is not allowed inside rendering");
         OpenGLTexture src = owned(source, OpenGLTexture.class, "source texture");
         OpenGLTexture dst = owned(destination, OpenGLTexture.class, "destination texture");
@@ -337,8 +437,10 @@ final class OpenGLCommandEncoder implements CommandEncoder {
             throw new IllegalArgumentException("texture copies require identical dimensions and format");
         }
         commands.add(context -> {
-            requireState(src.state, ResourceState.COPY_SRC, "copy source");
-            requireState(dst.state, ResourceState.COPY_DST, "copy destination");
+            src.requireAlive();
+            dst.requireAlive();
+            requireExactState(src.state, ResourceState.COPY_SRC, "copy source");
+            requireExactState(dst.state, ResourceState.COPY_DST, "copy destination");
             glCopyImageSubData(
                     src.handle, GL_TEXTURE_2D, 0, 0, 0, 0,
                     dst.handle, GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -349,15 +451,18 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     @Override
     public void transition(Texture texture, ResourceState from, ResourceState to) {
         requireRecording();
+        Objects.requireNonNull(texture, "texture");
+        Objects.requireNonNull(from, "from");
+        Objects.requireNonNull(to, "to");
         if (rendering) throw new IllegalStateException("transitions are not allowed inside rendering");
         OpenGLTexture resource = owned(texture, OpenGLTexture.class, "texture");
         validateTextureState(resource, from);
         validateTextureState(resource, to);
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("UNDEFINED cannot be a transition destination");
         commands.add(context -> {
-            if (validation && resource.state != from) {
-                throw new IllegalStateException("texture transition expected " + from + " but current state is " + resource.state);
-            }
+            resource.requireAlive();
+            OpenGLValidation.validateTransitionFrom(
+                    validation, resource.state, from, "texture");
             issueBarrier(resource.state, to);
             resource.state = to;
         });
@@ -366,15 +471,18 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     @Override
     public void transition(Buffer buffer, ResourceState from, ResourceState to) {
         requireRecording();
+        Objects.requireNonNull(buffer, "buffer");
+        Objects.requireNonNull(from, "from");
+        Objects.requireNonNull(to, "to");
         if (rendering) throw new IllegalStateException("transitions are not allowed inside rendering");
         OpenGLBuffer resource = owned(buffer, OpenGLBuffer.class, "buffer");
         validateBufferState(resource, from);
         validateBufferState(resource, to);
         if (to == ResourceState.UNDEFINED) throw new IllegalArgumentException("UNDEFINED cannot be a transition destination");
         commands.add(context -> {
-            if (validation && resource.state != from) {
-                throw new IllegalStateException("buffer transition expected " + from + " but current state is " + resource.state);
-            }
+            resource.requireAlive();
+            OpenGLValidation.validateTransitionFrom(
+                    validation, resource.state, from, "buffer");
             issueBarrier(resource.state, to);
             resource.state = to;
         });

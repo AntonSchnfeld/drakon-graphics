@@ -13,11 +13,8 @@ final class VulkanRecordingState {
         return finalStates.getOrDefault(resource, committed);
     }
 
-    void transition(VulkanStateResource resource, ResourceState from, ResourceState to) {
-        ResourceState actual = effectiveState(resource);
-        if (actual != from) {
-            throw new IllegalStateException("resource state is " + actual + " but transition expected " + from);
-        }
+    void transition(VulkanStateResource resource, ResourceState to) {
+        effectiveState(resource);
         finalStates.put(resource, to);
     }
 

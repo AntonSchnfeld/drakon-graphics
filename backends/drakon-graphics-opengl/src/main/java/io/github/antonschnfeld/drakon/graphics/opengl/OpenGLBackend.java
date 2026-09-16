@@ -3,6 +3,7 @@ package io.github.antonschnfeld.drakon.graphics.opengl;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsBackend;
 import io.github.antonschnfeld.drakon.graphics.backend.GraphicsDeviceConfig;
 import org.lwjgl.opengl.GL;
+import org.lwjgl.opengl.GLCapabilities;
 
 import java.util.Objects;
 
@@ -25,17 +26,22 @@ public final class OpenGLBackend implements GraphicsBackend {
         return "opengl";
     }
 
-    /**
-     * Reports whether the LWJGL OpenGL function provider can be loaded.
-     * The actual driver and version check occurs against the externally current
-     * context in {@link #createDevice(GraphicsDeviceConfig)}.
-     */
+    /** Reports whether the externally current context can support this backend. */
     @Override
     public boolean isSupported() {
+        GLCapabilities previous = null;
         try {
-            return GL.getFunctionProvider() != null;
+            try {
+                previous = GL.getCapabilities();
+            } catch (IllegalStateException ignored) {
+                // No LWJGL capabilities were associated with this thread.
+            }
+            GLCapabilities probed = GL.createCapabilities();
+            return probed.OpenGL43;
         } catch (LinkageError | RuntimeException ignored) {
             return false;
+        } finally {
+            GL.setCapabilities(previous);
         }
     }
 

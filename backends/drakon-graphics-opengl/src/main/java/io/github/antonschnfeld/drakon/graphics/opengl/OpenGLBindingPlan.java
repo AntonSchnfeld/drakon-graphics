@@ -23,6 +23,16 @@ final class OpenGLBindingPlan {
         return layouts.get(group);
     }
 
+    int layoutCount() {
+        return layouts.size();
+    }
+
+    List<NativeBinding> nativeBindings(int group) {
+        return layout(group).bindings().stream()
+                .map(binding -> new NativeBinding(binding, slot(binding)))
+                .toList();
+    }
+
     int slot(Binding<?> binding) {
         Integer slot = slots.get(binding);
         if (slot == null) {
@@ -30,4 +40,6 @@ final class OpenGLBindingPlan {
         }
         return slot;
     }
+
+    record NativeBinding(Binding<?> binding, int slot) {}
 }

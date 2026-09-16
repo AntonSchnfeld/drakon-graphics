@@ -44,13 +44,18 @@ import static org.lwjgl.opengl.GL43C.*;
 public final class OpenGLDevice implements GraphicsDevice {
     private final GraphicsDeviceConfig config;
     private final GLCapabilities capabilities;
+    private final long uniformBufferOffsetAlignment;
     private final OpenGLShaderTarget shaderTarget = new OpenGLShaderTarget(4, 3, 430);
     private final List<OpenGLResource> resources = new ArrayList<>();
     private boolean closed;
 
-    private OpenGLDevice(GraphicsDeviceConfig config, GLCapabilities capabilities) {
+    private OpenGLDevice(
+            GraphicsDeviceConfig config,
+            GLCapabilities capabilities,
+            long uniformBufferOffsetAlignment) {
         this.config = config;
         this.capabilities = capabilities;
+        this.uniformBufferOffsetAlignment = uniformBufferOffsetAlignment;
     }
 
     static OpenGLDevice create(GraphicsDeviceConfig config) {
@@ -60,7 +65,11 @@ public final class OpenGLDevice implements GraphicsDevice {
             if (!caps.OpenGL43) {
                 throw new IllegalStateException("the current external context does not support OpenGL 4.3");
             }
-            return new OpenGLDevice(config, caps);
+            long alignment = glGetInteger(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT);
+            if (alignment <= 0) {
+                throw new IllegalStateException("OpenGL reported an invalid uniform-buffer offset alignment");
+            }
+            return new OpenGLDevice(config, caps, alignment);
         } catch (RuntimeException | Error failure) {
             throw new IllegalStateException("an OpenGL 4.3 context must be current when creating a device", failure);
         }
@@ -73,6 +82,8 @@ public final class OpenGLDevice implements GraphicsDevice {
     }
 
     boolean isClosed() { return closed; }
+
+    long uniformBufferOffsetAlignment() { return uniformBufferOffsetAlignment; }
 
     void activateCapabilities() {
         requireOpen();
@@ -383,6 +394,7 @@ public final class OpenGLDevice implements GraphicsDevice {
         for (Object value : descriptor.values().values()) {
             if (value instanceof BufferBinding buffer) {
                 owned(buffer.buffer(), OpenGLBuffer.class, "bound buffer");
+                OpenGLValidation.validateUniformOffset(buffer.offset(), uniformBufferOffsetAlignment);
             } else if (value instanceof TextureBinding texture) {
                 owned(texture.texture(), OpenGLTexture.class, "bound texture");
                 owned(texture.sampler(), OpenGLSampler.class, "bound sampler");
