@@ -57,7 +57,17 @@ final class ThreeDWorkload implements AutoCloseable {
     static final int INSTANCE_STRIDE = 20 * Float.BYTES;
     static final int INSTANCE_BUFFER_BYTES = INSTANCE_COUNT * INSTANCE_STRIDE;
 
-    private static final int ACCEPTANCE_FRAMES = 240;
+    private static final int PRESENTATION_STRESS_FRAMES = 720;
+    private static final int MULTI_SUBMIT_START_FRAME = 120;
+    private static final int MINIMIZE_BEFORE_FRAME = 500;
+    private static final int[] RESIZE_REQUEST_FRAMES = {60, 160, 260, 360, 460};
+    private static final int[][] RESIZE_REQUESTS = {
+            {640, 360},
+            {1000, 600},
+            {480, 720},
+            {1280, 720},
+            {800, 500}
+    };
     private static final int OFFSCREEN_WIDTH = 800;
     private static final int OFFSCREEN_HEIGHT = 500;
     private static final int CUBE_INDEX_COUNT = 36;
@@ -168,6 +178,39 @@ final class ThreeDWorkload implements AutoCloseable {
             }
             """;
 
+    private static final String OPENGL_OVERLAY_VERTEX = """
+            #version 430
+            const vec2 positions[3] = vec2[3](
+                vec2(-0.96, 0.94),
+                vec2(-0.96, 0.72),
+                vec2(-0.74, 0.94));
+            void main() {
+                gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+            }
+            """;
+
+    private static final String VULKAN_OVERLAY_VERTEX = """
+            #version 450
+            const vec2 positions[3] = vec2[3](
+                vec2(-0.96, 0.94),
+                vec2(-0.96, 0.72),
+                vec2(-0.74, 0.94));
+            void main() {
+                gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+            }
+            """;
+
+    private static final String OPENGL_OVERLAY_FRAGMENT = """
+            #version 430
+            layout(location = 0) out vec4 outColor;
+            void main() {
+                outColor = vec4(1.0, 0.0, 0.75, 0.82);
+            }
+            """;
+
+    private static final String VULKAN_OVERLAY_FRAGMENT = OPENGL_OVERLAY_FRAGMENT
+            .replace("#version 430", "#version 450");
+
     private final GraphicsDevice device;
     private final RenderTarget presentationTarget;
     private final Renderer renderer;
@@ -186,13 +229,21 @@ final class ThreeDWorkload implements AutoCloseable {
     private final Sampler presentSampler;
     private final BindingSet cameraBindingSet;
     private final BindingSet presentBindingSet;
+    private final BindingLayout presentLayout;
     private final GraphicsState sceneState;
     private final GraphicsState transparentState;
-    private final GraphicsState presentState;
+    private final Shader presentVertexShader;
+    private final Shader presentFragmentShader;
+    private final Shader overlayVertexShader;
+    private final Shader overlayFragmentShader;
+    private GraphicsState presentState;
+    private GraphicsState overlayState;
+    private TextureFormat presentationFormat;
     private final ByteBuffer cameraData = ByteBuffer.allocate(16 * Float.BYTES).order(ByteOrder.nativeOrder());
     private final ByteBuffer instanceData = ByteBuffer.allocate(INSTANCE_BUFFER_BYTES).order(ByteOrder.nativeOrder());
     private final long animationStartNanos = System.nanoTime();
     private boolean initialized;
+    private int presentationStateRebuilds;
 
     static ThreeDWorkload createOpenGL(GraphicsDevice device, RenderTarget presentationTarget) {
         return create(
@@ -201,7 +252,9 @@ final class ThreeDWorkload implements AutoCloseable {
                 new GlslShaderCode(OPENGL_SCENE_VERTEX),
                 new GlslShaderCode(OPENGL_SCENE_FRAGMENT),
                 new GlslShaderCode(OPENGL_PRESENT_VERTEX),
-                new GlslShaderCode(OPENGL_PRESENT_FRAGMENT));
+                new GlslShaderCode(OPENGL_PRESENT_FRAGMENT),
+                new GlslShaderCode(OPENGL_OVERLAY_VERTEX),
+                new GlslShaderCode(OPENGL_OVERLAY_FRAGMENT));
     }
 
     static ThreeDWorkload createVulkan(GraphicsDevice device, RenderTarget presentationTarget) {
@@ -215,7 +268,11 @@ final class ThreeDWorkload implements AutoCloseable {
                 new SpirvShaderCode(BackendSpikeMain.compileSpirv(
                         VULKAN_PRESENT_VERTEX, shaderc_glsl_vertex_shader)),
                 new SpirvShaderCode(BackendSpikeMain.compileSpirv(
-                        VULKAN_PRESENT_FRAGMENT, shaderc_glsl_fragment_shader)));
+                        VULKAN_PRESENT_FRAGMENT, shaderc_glsl_fragment_shader)),
+                new SpirvShaderCode(BackendSpikeMain.compileSpirv(
+                        VULKAN_OVERLAY_VERTEX, shaderc_glsl_vertex_shader)),
+                new SpirvShaderCode(BackendSpikeMain.compileSpirv(
+                        VULKAN_OVERLAY_FRAGMENT, shaderc_glsl_fragment_shader)));
     }
 
     private static ThreeDWorkload create(
@@ -224,17 +281,46 @@ final class ThreeDWorkload implements AutoCloseable {
             ShaderCode sceneVertexCode,
             ShaderCode sceneFragmentCode,
             ShaderCode presentVertexCode,
-            ShaderCode presentFragmentCode) {
+            ShaderCode presentFragmentCode,
+            ShaderCode overlayVertexCode,
+            ShaderCode overlayFragmentCode) {
         try (Shader sceneVertex = device.createShader(new ShaderDescriptor(
                         ShaderStage.VERTEX, "main", sceneVertexCode));
                 Shader sceneFragment = device.createShader(new ShaderDescriptor(
-                        ShaderStage.FRAGMENT, "main", sceneFragmentCode));
-                Shader presentVertex = device.createShader(new ShaderDescriptor(
+                        ShaderStage.FRAGMENT, "main", sceneFragmentCode))) {
+            Shader presentVertex = null;
+            Shader presentFragment = null;
+            Shader overlayVertex = null;
+            Shader overlayFragment = null;
+            boolean ownershipTransferred = false;
+            try {
+                presentVertex = device.createShader(new ShaderDescriptor(
                         ShaderStage.VERTEX, "main", presentVertexCode));
-                Shader presentFragment = device.createShader(new ShaderDescriptor(
-                        ShaderStage.FRAGMENT, "main", presentFragmentCode))) {
-            return new ThreeDWorkload(
-                    device, presentationTarget, sceneVertex, sceneFragment, presentVertex, presentFragment);
+                presentFragment = device.createShader(new ShaderDescriptor(
+                        ShaderStage.FRAGMENT, "main", presentFragmentCode));
+                overlayVertex = device.createShader(new ShaderDescriptor(
+                        ShaderStage.VERTEX, "main", overlayVertexCode));
+                overlayFragment = device.createShader(new ShaderDescriptor(
+                        ShaderStage.FRAGMENT, "main", overlayFragmentCode));
+                ThreeDWorkload result = new ThreeDWorkload(
+                        device,
+                        presentationTarget,
+                        sceneVertex,
+                        sceneFragment,
+                        presentVertex,
+                        presentFragment,
+                        overlayVertex,
+                        overlayFragment);
+                ownershipTransferred = true;
+                return result;
+            } finally {
+                if (!ownershipTransferred) {
+                    if (overlayFragment != null) overlayFragment.close();
+                    if (overlayVertex != null) overlayVertex.close();
+                    if (presentFragment != null) presentFragment.close();
+                    if (presentVertex != null) presentVertex.close();
+                }
+            }
         }
     }
 
@@ -244,9 +330,15 @@ final class ThreeDWorkload implements AutoCloseable {
             Shader sceneVertex,
             Shader sceneFragment,
             Shader presentVertex,
-            Shader presentFragment) {
+            Shader presentFragment,
+            Shader overlayVertex,
+            Shader overlayFragment) {
         this.device = device;
         this.presentationTarget = presentationTarget;
+        presentVertexShader = presentVertex;
+        presentFragmentShader = presentFragment;
+        overlayVertexShader = overlayVertex;
+        overlayFragmentShader = overlayFragment;
         renderer = new Renderer(device);
         cubeVertexBuffer = device.createBuffer(
                 new BufferDescriptor(24L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
@@ -299,7 +391,7 @@ final class ThreeDWorkload implements AutoCloseable {
 
         Binding<TextureBinding> colorBinding = Binding.sampledTexture(
                 "offscreenColor", 0, ShaderStage.FRAGMENT);
-        BindingLayout presentLayout = BindingLayout.of(colorBinding);
+        presentLayout = BindingLayout.of(colorBinding);
         presentBindingSet = device.createBindingSet(BindingSetDescriptor.builder(presentLayout)
                 .bind(colorBinding, new TextureBinding(offscreenColor, presentSampler))
                 .build());
@@ -345,9 +437,10 @@ final class ThreeDWorkload implements AutoCloseable {
                 .colorFormat(TextureFormat.RGBA8_UNORM)
                 .depthFormat(TextureFormat.D32_FLOAT)
                 .build());
+        presentationFormat = presentationTarget.colorFormats().get(0);
         presentState = device.createGraphicsState(GraphicsStateDescriptor.builder()
-                .vertexShader(presentVertex)
-                .fragmentShader(presentFragment)
+                .vertexShader(presentVertexShader)
+                .fragmentShader(presentFragmentShader)
                 .vertexLayout(VertexLayout.builder()
                         .binding(0, 4 * Float.BYTES, VertexInputRate.PER_VERTEX)
                         .attribute(0, 0, VertexFormat.FLOAT2, 0)
@@ -355,29 +448,146 @@ final class ThreeDWorkload implements AutoCloseable {
                         .build())
                 .bindingLayout(presentLayout)
                 .raster(new RasterState(CullMode.NONE))
-                .colorFormat(presentationTarget.colorFormats().get(0))
+                .colorFormat(presentationFormat)
+                .build());
+        overlayState = device.createGraphicsState(GraphicsStateDescriptor.builder()
+                .vertexShader(overlayVertexShader)
+                .fragmentShader(overlayFragmentShader)
+                .blend(BlendState.alphaBlend())
+                .raster(new RasterState(CullMode.NONE))
+                .colorFormat(presentationFormat)
                 .build());
     }
 
-    void runAcceptance(String backendName, Runnable pollEvents) {
+    void runPresentationStress(String backendName, GlfwWindow window) {
         initialize();
         long startNanos = System.nanoTime();
-        for (int frame = 0; frame < ACCEPTANCE_FRAMES; frame++) {
-            renderFrame();
-            pollEvents.run();
+        RenderTarget stableTarget = presentationTarget;
+        int lastTargetWidth = presentationTarget.width();
+        int lastTargetHeight = presentationTarget.height();
+        int targetExtentChanges = 0;
+        int resizeRequest = 0;
+        int zeroExtentPauses = 0;
+        boolean zeroObservedDuringMinimize = false;
+
+        System.out.printf(Locale.ROOT,
+                "%s presentation stress initial extent: raw=%dx%d target=%dx%d format=%s.%n",
+                backendName,
+                window.rawFramebufferWidth(),
+                window.rawFramebufferHeight(),
+                lastTargetWidth,
+                lastTargetHeight,
+                presentationFormat);
+
+        for (int frame = 0; frame < PRESENTATION_STRESS_FRAMES; frame++) {
+            if (resizeRequest < RESIZE_REQUESTS.length
+                    && frame == RESIZE_REQUEST_FRAMES[resizeRequest]) {
+                int[] requested = RESIZE_REQUESTS[resizeRequest];
+                window.setWindowSize(requested[0], requested[1]);
+                window.pollEvents();
+                System.out.printf(Locale.ROOT,
+                        "%s resize request %d: logical=%dx%d observed raw=%dx%d.%n",
+                        backendName,
+                        resizeRequest + 1,
+                        requested[0],
+                        requested[1],
+                        window.rawFramebufferWidth(),
+                        window.rawFramebufferHeight());
+                resizeRequest++;
+            }
+
+            if (frame == MINIMIZE_BEFORE_FRAME) {
+                zeroObservedDuringMinimize = exerciseMinimizeRestore(backendName, window);
+                if (zeroObservedDuringMinimize) zeroExtentPauses++;
+            }
+
+            if (waitWhileFramebufferZero(window)) zeroExtentPauses++;
+            renderFrame(frame >= MULTI_SUBMIT_START_FRAME);
+            if (frame + 1 < PRESENTATION_STRESS_FRAMES) window.pollEvents();
+
+            if (presentationTarget != stableTarget) {
+                throw new AssertionError("presentation RenderTarget facade identity changed");
+            }
+            int targetWidth = presentationTarget.width();
+            int targetHeight = presentationTarget.height();
+            if (targetWidth != lastTargetWidth || targetHeight != lastTargetHeight) {
+                targetExtentChanges++;
+                lastTargetWidth = targetWidth;
+                lastTargetHeight = targetHeight;
+                System.out.printf(Locale.ROOT,
+                        "%s presentation target extent changed to %dx%d after presented frame %d.%n",
+                        backendName, targetWidth, targetHeight, frame + 1);
+            }
         }
         double seconds = elapsedSeconds(startNanos);
         System.out.printf(Locale.ROOT,
-                "%s 3D alpha acceptance: %d frames in %.3f s (%.1f FPS).%n",
-                backendName, ACCEPTANCE_FRAMES, seconds, ACCEPTANCE_FRAMES / seconds);
+                "%s presentation stress passed: %d frames, %d multi-submit frames, "
+                        + "%d target extent changes, zero extent during minimize=%s, "
+                        + "zero-extent pauses=%d, presentation-state rebuilds=%d, "
+                        + "same target facade=true, persistent application resources=true "
+                        + "in %.3f s (%.1f FPS).%n",
+                backendName,
+                PRESENTATION_STRESS_FRAMES,
+                PRESENTATION_STRESS_FRAMES - MULTI_SUBMIT_START_FRAME,
+                targetExtentChanges,
+                zeroObservedDuringMinimize,
+                zeroExtentPauses,
+                presentationStateRebuilds,
+                seconds,
+                PRESENTATION_STRESS_FRAMES / seconds);
     }
 
-    void runInteractive(BooleanSupplier shouldClose, Runnable pollEvents) {
+    void runInteractive(GlfwWindow window) {
         initialize();
-        while (!shouldClose.getAsBoolean()) {
-            renderFrame();
-            pollEvents.run();
+        while (!window.shouldClose()) {
+            if (waitWhileFramebufferZero(window)) continue;
+            renderFrame(true);
+            window.pollEvents();
         }
+    }
+
+    private static boolean exerciseMinimizeRestore(String backendName, GlfwWindow window) {
+        window.iconify();
+        boolean zeroObserved = false;
+        long observationDeadline = System.nanoTime() + 2_000_000_000L;
+        do {
+            window.waitEvents(0.05);
+            zeroObserved = window.rawFramebufferWidth() == 0 || window.rawFramebufferHeight() == 0;
+            if (zeroObserved) break;
+        } while (System.nanoTime() < observationDeadline);
+
+        System.out.printf(Locale.ROOT,
+                "%s minimize observation: iconified=%s raw=%dx%d zeroObserved=%s; "
+                        + "no presentation work was issued during observation.%n",
+                backendName,
+                window.isIconified(),
+                window.rawFramebufferWidth(),
+                window.rawFramebufferHeight(),
+                zeroObserved);
+
+        window.restore();
+        long restoreDeadline = System.nanoTime() + 5_000_000_000L;
+        while (window.rawFramebufferWidth() == 0 || window.rawFramebufferHeight() == 0) {
+            if (System.nanoTime() >= restoreDeadline) {
+                throw new IllegalStateException("GLFW framebuffer did not become renderable after restore");
+            }
+            window.waitEvents(0.05);
+        }
+        window.pollEvents();
+        System.out.printf(Locale.ROOT,
+                "%s restore observation: raw=%dx%d; rendering resumes with existing resources.%n",
+                backendName, window.rawFramebufferWidth(), window.rawFramebufferHeight());
+        return zeroObserved;
+    }
+
+    private static boolean waitWhileFramebufferZero(GlfwWindow window) {
+        boolean waited = false;
+        while (!window.shouldClose()
+                && (window.rawFramebufferWidth() == 0 || window.rawFramebufferHeight() == 0)) {
+            waited = true;
+            window.waitEvents(0.05);
+        }
+        return waited;
     }
 
     private void initialize() {
@@ -398,7 +608,7 @@ final class ThreeDWorkload implements AutoCloseable {
         initialized = true;
     }
 
-    private void renderFrame() {
+    private void renderFrame(boolean overlaySubmission) {
         updateFrameData(elapsedSeconds(animationStartNanos));
         renderer.execute(RenderPipeline.of(commands -> {
             commands.writeBuffer(cameraBuffer, 0, cameraData);
@@ -440,6 +650,7 @@ final class ThreeDWorkload implements AutoCloseable {
             commands.beginRendering(RenderingInfo.builder(presentationTarget)
                     .color(ColorAttachmentOps.clear(Color.BLACK))
                     .build());
+            ensurePresentationStatesCompatible();
             commands.setGraphicsState(presentState);
             commands.setVertexBuffer(0, presentVertexBuffer, 0);
             commands.setIndexBuffer(presentIndexBuffer, IndexType.UINT16, 0);
@@ -451,7 +662,61 @@ final class ThreeDWorkload implements AutoCloseable {
                     ResourceState.SAMPLED_READ,
                     ResourceState.COLOR_ATTACHMENT_WRITE);
         }));
+        if (overlaySubmission) {
+            renderer.execute(RenderPipeline.of(commands -> {
+                commands.beginRendering(RenderingInfo.builder(presentationTarget)
+                        .color(ColorAttachmentOps.load())
+                        .build());
+                ensurePresentationStatesCompatible();
+                commands.setGraphicsState(overlayState);
+                commands.draw(3, 1, 0, 0);
+                commands.endRendering();
+            }));
+        }
         device.present(presentationTarget);
+    }
+
+    private void ensurePresentationStatesCompatible() {
+        TextureFormat currentFormat = presentationTarget.colorFormats().get(0);
+        if (currentFormat == presentationFormat) return;
+
+        GraphicsState nextPresent = device.createGraphicsState(GraphicsStateDescriptor.builder()
+                .vertexShader(presentVertexShader)
+                .fragmentShader(presentFragmentShader)
+                .vertexLayout(VertexLayout.builder()
+                        .binding(0, 4 * Float.BYTES, VertexInputRate.PER_VERTEX)
+                        .attribute(0, 0, VertexFormat.FLOAT2, 0)
+                        .attribute(1, 0, VertexFormat.FLOAT2, 2 * Float.BYTES)
+                        .build())
+                .bindingLayout(presentLayout)
+                .raster(new RasterState(CullMode.NONE))
+                .colorFormat(currentFormat)
+                .build());
+        GraphicsState nextOverlay;
+        try {
+            nextOverlay = device.createGraphicsState(GraphicsStateDescriptor.builder()
+                    .vertexShader(overlayVertexShader)
+                    .fragmentShader(overlayFragmentShader)
+                    .blend(BlendState.alphaBlend())
+                    .raster(new RasterState(CullMode.NONE))
+                    .colorFormat(currentFormat)
+                    .build());
+        } catch (RuntimeException | Error failure) {
+            nextPresent.close();
+            throw failure;
+        }
+
+        GraphicsState previousPresent = presentState;
+        GraphicsState previousOverlay = overlayState;
+        presentState = nextPresent;
+        overlayState = nextOverlay;
+        presentationFormat = currentFormat;
+        presentationStateRebuilds++;
+        previousOverlay.close();
+        previousPresent.close();
+        System.out.printf(Locale.ROOT,
+                "Presentation format changed to %s; rebuilt only presentation graphics states.%n",
+                currentFormat);
     }
 
     private void updateFrameData(double seconds) {
@@ -616,7 +881,12 @@ final class ThreeDWorkload implements AutoCloseable {
 
     @Override
     public void close() {
+        overlayState.close();
         presentState.close();
+        overlayFragmentShader.close();
+        overlayVertexShader.close();
+        presentFragmentShader.close();
+        presentVertexShader.close();
         transparentState.close();
         sceneState.close();
         presentBindingSet.close();
@@ -634,10 +904,5 @@ final class ThreeDWorkload implements AutoCloseable {
         instanceBuffer.close();
         cubeIndexBuffer.close();
         cubeVertexBuffer.close();
-    }
-
-    @FunctionalInterface
-    interface BooleanSupplier {
-        boolean getAsBoolean();
     }
 }
