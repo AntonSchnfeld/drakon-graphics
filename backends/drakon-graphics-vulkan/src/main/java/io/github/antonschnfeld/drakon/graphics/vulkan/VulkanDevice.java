@@ -455,7 +455,10 @@ public final class VulkanDevice implements GraphicsDevice {
                     throw new IllegalArgumentException("selected queue family cannot present to this surface");
                 }
             }
-            createSwapchain(target, 0L);
+            if (!createSwapchain(target, 0L)) {
+                throw new IllegalStateException(
+                        "initial presentation surface has no positive renderable extent");
+            }
             createFrameSync(target, 2);
             return track(target);
         } catch (RuntimeException | Error failure) {
@@ -559,6 +562,10 @@ public final class VulkanDevice implements GraphicsDevice {
 
     private void ensurePresentationAcquired(VulkanPresentationTarget target) {
         if (target.imageAcquired) return;
+        if (target.swapchainRecreation.pending() && !recreateSwapchainIfPossible(target)) {
+            throw new IllegalStateException(
+                    "presentation surface is temporarily unavailable because its extent is zero");
+        }
         FrameSync frame = target.frames[target.frameSlot];
         retireFrame(frame);
 
@@ -569,10 +576,15 @@ public final class VulkanDevice implements GraphicsDevice {
                         device, target.swapchain, Long.MAX_VALUE,
                         frame.imageAvailable, VK_NULL_HANDLE, pImage);
                 if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-                    recreateSwapchain(target);
+                    target.swapchainRecreation.request();
+                    if (!recreateSwapchainIfPossible(target)) {
+                        throw new IllegalStateException(
+                                "presentation surface is temporarily unavailable because its extent is zero");
+                    }
                     continue;
                 }
                 if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) check(result, "vkAcquireNextImageKHR");
+                if (result == VK_SUBOPTIMAL_KHR) target.swapchainRecreation.request();
                 target.imageIndex = pImage.get(0);
                 target.currentAcquisition = ++target.acquisitionSerial;
                 target.imageAcquired = true;
@@ -622,11 +634,14 @@ public final class VulkanDevice implements GraphicsDevice {
         }
     }
 
-    private void createSwapchain(VulkanPresentationTarget target, long oldSwapchain) {
+    private boolean createSwapchain(VulkanPresentationTarget target, long oldSwapchain) {
         try (Arena arena = Arena.ofConfined()) {
             VkSurfaceCapabilitiesKHR capabilities = VulkanFfm.struct(arena, VkSurfaceCapabilitiesKHR.SIZEOF, VkSurfaceCapabilitiesKHR.ALIGNOF, VkSurfaceCapabilitiesKHR::create);
             check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, target.surface, capabilities),
                     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+
+            VulkanSwapchainExtent.Plan extent = planSwapchainExtent(target, capabilities);
+            if (!extent.recreatable()) return false;
 
             IntBuffer formatCount = VulkanFfm.ints(arena, 1);
             check(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, target.surface, formatCount, null),
@@ -637,17 +652,8 @@ public final class VulkanDevice implements GraphicsDevice {
                     "vkGetPhysicalDeviceSurfaceFormatsKHR");
             VkSurfaceFormatKHR chosen = chooseSurfaceFormat(formats);
 
-            int width;
-            int height;
-            if (capabilities.currentExtent().width() != 0xFFFFFFFF) {
-                width = capabilities.currentExtent().width();
-                height = capabilities.currentExtent().height();
-            } else {
-                width = clamp(Math.max(target.surfaceFactory.width(), 1),
-                        capabilities.minImageExtent().width(), capabilities.maxImageExtent().width());
-                height = clamp(Math.max(target.surfaceFactory.height(), 1),
-                        capabilities.minImageExtent().height(), capabilities.maxImageExtent().height());
-            }
+            int width = extent.width();
+            int height = extent.height();
 
             int imageCount = capabilities.minImageCount() + 1;
             if (capabilities.maxImageCount() > 0) imageCount = Math.min(imageCount, capabilities.maxImageCount());
@@ -704,10 +710,47 @@ public final class VulkanDevice implements GraphicsDevice {
                 case VK_FORMAT_R8G8B8A8_UNORM -> TextureFormat.RGBA8_UNORM;
                 default -> throw new IllegalStateException("chosen swapchain format lacks portable TextureFormat mapping");
             };
+            return true;
         }
     }
 
-    private void recreateSwapchain(VulkanPresentationTarget target) {
+    private VulkanSwapchainExtent.Plan planSwapchainExtent(
+            VulkanPresentationTarget target,
+            VkSurfaceCapabilitiesKHR capabilities) {
+        return VulkanSwapchainExtent.plan(
+                capabilities.currentExtent().width(),
+                capabilities.currentExtent().height(),
+                target.surfaceFactory::width,
+                target.surfaceFactory::height,
+                capabilities.minImageExtent().width(),
+                capabilities.minImageExtent().height(),
+                capabilities.maxImageExtent().width(),
+                capabilities.maxImageExtent().height());
+    }
+
+    private boolean swapchainExtentIsRecreatable(VulkanPresentationTarget target) {
+        try (Arena arena = Arena.ofConfined()) {
+            VkSurfaceCapabilitiesKHR capabilities = VulkanFfm.struct(
+                    arena,
+                    VkSurfaceCapabilitiesKHR.SIZEOF,
+                    VkSurfaceCapabilitiesKHR.ALIGNOF,
+                    VkSurfaceCapabilitiesKHR::create);
+            check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+                            physicalDevice, target.surface, capabilities),
+                    "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+            return planSwapchainExtent(target, capabilities).recreatable();
+        }
+    }
+
+    private boolean recreateSwapchainIfPossible(VulkanPresentationTarget target) {
+        if (!target.swapchainRecreation.pending()) {
+            throw new IllegalStateException("swapchain recreation was not requested");
+        }
+        if (!swapchainExtentIsRecreatable(target)) {
+            reportSwapchainRecreationDeferred();
+            return false;
+        }
+
         check(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(recreate swapchain)");
         for (FrameSync frame : target.frames) if (frame != null) reclaimFrame(frame);
         reclaimDeferredSubmissions();
@@ -718,19 +761,30 @@ public final class VulkanDevice implements GraphicsDevice {
         int oldWidth = target.swapchainWidth;
         int oldHeight = target.swapchainHeight;
         TextureFormat oldFormat = target.colorFormat;
-        createSwapchain(target, old);
-        target.swapchainRecreations++;
+        if (!createSwapchain(target, old)) {
+            reportSwapchainRecreationDeferred();
+            return false;
+        }
+        target.swapchainRecreation.complete();
         if (config.validation()) {
             System.out.printf(
                     "[drakon-graphics][vulkan] swapchain recreation %d: "
                             + "%dx%d %s -> %dx%d %s.%n",
-                    target.swapchainRecreations,
+                    target.swapchainRecreation.completedCount(),
                     oldWidth,
                     oldHeight,
                     oldFormat,
                     target.swapchainWidth,
                     target.swapchainHeight,
                     target.colorFormat);
+        }
+        return true;
+    }
+
+    private void reportSwapchainRecreationDeferred() {
+        if (config.validation()) {
+            System.out.println(
+                    "[drakon-graphics][vulkan] swapchain recreation deferred: surface extent is zero.");
         }
     }
 
@@ -755,10 +809,6 @@ public final class VulkanDevice implements GraphicsDevice {
         };
         for (int candidate : candidates) if ((supported & candidate) != 0) return candidate;
         throw new IllegalStateException("surface exposes no supported composite-alpha mode");
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(value, max));
     }
 
     private void destroySwapchainViews(VulkanPresentationTarget target) {
@@ -1420,9 +1470,12 @@ public final class VulkanDevice implements GraphicsDevice {
             presentation.currentAcquisition = 0L;
             presentation.frameSlot = (presentation.frameSlot + 1) % presentation.frames.length;
             if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-                recreateSwapchain(presentation);
+                presentation.swapchainRecreation.request();
             } else {
                 check(result, "vkQueuePresentKHR");
+            }
+            if (presentation.swapchainRecreation.pending()) {
+                recreateSwapchainIfPossible(presentation);
             }
         }
     }
