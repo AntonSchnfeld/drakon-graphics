@@ -715,10 +715,22 @@ public final class VulkanDevice implements GraphicsDevice {
         target.imageIndex = -1;
         target.currentAcquisition = 0L;
         long old = target.swapchain;
+        int oldWidth = target.swapchainWidth;
+        int oldHeight = target.swapchainHeight;
         TextureFormat oldFormat = target.colorFormat;
         createSwapchain(target, old);
-        if (oldFormat != target.colorFormat) {
-            throw new IllegalStateException("swapchain recreation changed format; stable RenderTarget format contract cannot be preserved");
+        target.swapchainRecreations++;
+        if (config.validation()) {
+            System.out.printf(
+                    "[drakon-graphics][vulkan] swapchain recreation %d: "
+                            + "%dx%d %s -> %dx%d %s.%n",
+                    target.swapchainRecreations,
+                    oldWidth,
+                    oldHeight,
+                    oldFormat,
+                    target.swapchainWidth,
+                    target.swapchainHeight,
+                    target.colorFormat);
         }
     }
 

@@ -249,9 +249,9 @@ public final class BackendSpikeMain {
                             }
                         }
                         try (ThreeDWorkload workload = ThreeDWorkload.createOpenGL(device, target)) {
-                            workload.runAcceptance("OpenGL", window::pollEvents);
+                            workload.runPresentationStress("OpenGL", window);
                             if (interactive) {
-                                workload.runInteractive(window::shouldClose, window::pollEvents);
+                                workload.runInteractive(window);
                             }
                         }
                     }
@@ -277,6 +277,9 @@ public final class BackendSpikeMain {
                     GraphicsDeviceConfig.debug(), new GlfwVulkanSurfaceFactory(window));
             try (VulkanDevice device = presentation.device();
                     RenderTarget target = presentation.target()) {
+                expectIllegalState(
+                        "Vulkan present without a submitted presentation frame",
+                        () -> device.present(target));
                 try (Buffer heapInitializedBuffer = createInitializationSmokeBuffer(device, false);
                         Buffer directInitializedBuffer = createInitializationSmokeBuffer(device, true);
                         Buffer largeHeapInitializedBuffer = createLargeHeapInitializationSmokeBuffer(device);
@@ -296,6 +299,9 @@ public final class BackendSpikeMain {
                         verifyBindingPersistenceAcrossStateChange(
                                 device, target, vertex, fragment, false);
                         runVulkanLifetimeStress(device, target, vertex, fragment);
+                        expectIllegalState(
+                                "Vulkan double-present without a new frame",
+                                () -> device.present(target));
                         try (Shader dynamicVertex = device.createShader(new ShaderDescriptor(
                                 ShaderStage.VERTEX, "main", new SpirvShaderCode(compileSpirv(
                                         VULKAN_DYNAMIC_VERTEX_GLSL, shaderc_glsl_vertex_shader))));
@@ -309,9 +315,9 @@ public final class BackendSpikeMain {
                                     device, target, mesh, window::pollEvents, "Vulkan", animationStartNanos);
                         }
                         try (ThreeDWorkload workload = ThreeDWorkload.createVulkan(device, target)) {
-                            workload.runAcceptance("Vulkan", window::pollEvents);
+                            workload.runPresentationStress("Vulkan", window);
                             if (interactive) {
-                                workload.runInteractive(window::shouldClose, window::pollEvents);
+                                workload.runInteractive(window);
                             }
                         }
                     }
@@ -684,6 +690,16 @@ public final class BackendSpikeMain {
 
     private static double elapsedSeconds(long startNanos) {
         return (System.nanoTime() - startNanos) * 1.0e-9;
+    }
+
+    private static void expectIllegalState(String label, Runnable operation) {
+        try {
+            operation.run();
+        } catch (IllegalStateException expected) {
+            System.out.println(label + " rejected as required.");
+            return;
+        }
+        throw new AssertionError(label + " was accepted");
     }
 
     private static ByteBuffer dynamicFrameData(double phase) {

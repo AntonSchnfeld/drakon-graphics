@@ -41,11 +41,50 @@ final class GlfwWindow implements AutoCloseable {
         glfwPollEvents();
     }
 
+    void waitEvents(double timeoutSeconds) {
+        requireOpen();
+        if (!(timeoutSeconds > 0.0)) {
+            throw new IllegalArgumentException("event wait timeout must be positive");
+        }
+        glfwWaitEventsTimeout(timeoutSeconds);
+    }
+
+    void setWindowSize(int width, int height) {
+        requireOpen();
+        if (width <= 0 || height <= 0) {
+            throw new IllegalArgumentException("window dimensions must be positive");
+        }
+        glfwSetWindowSize(handle, width, height);
+    }
+
+    void iconify() {
+        requireOpen();
+        glfwIconifyWindow(handle);
+    }
+
+    void restore() {
+        requireOpen();
+        glfwRestoreWindow(handle);
+    }
+
+    boolean isIconified() {
+        requireOpen();
+        return glfwGetWindowAttrib(handle, GLFW_ICONIFIED) == GLFW_TRUE;
+    }
+
     int framebufferWidth() {
-        return framebufferExtent(true);
+        return Math.max(rawFramebufferWidth(), 1);
     }
 
     int framebufferHeight() {
+        return Math.max(rawFramebufferHeight(), 1);
+    }
+
+    int rawFramebufferWidth() {
+        return framebufferExtent(true);
+    }
+
+    int rawFramebufferHeight() {
         return framebufferExtent(false);
     }
 
@@ -57,7 +96,7 @@ final class GlfwWindow implements AutoCloseable {
             IntBuffer height = arena.allocate(ValueLayout.JAVA_INT).asByteBuffer()
                     .order(ByteOrder.nativeOrder()).asIntBuffer();
             glfwGetFramebufferSize(handle, width, height);
-            return Math.max(widthResult ? width.get(0) : height.get(0), 1);
+            return widthResult ? width.get(0) : height.get(0);
         }
     }
 
