@@ -1,5 +1,6 @@
 package io.github.antonschnfeld.drakon.graphics.opengl;
 
+import io.github.antonschnfeld.drakon.graphics.command.DepthAttachmentOps;
 import io.github.antonschnfeld.drakon.graphics.resource.Binding;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingLayout;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingType;
@@ -39,6 +40,7 @@ public final class OpenGLBackendLogicChecks {
         transitionFromValidationFollowsConfig();
         uploadAdaptationPreservesSelectedRanges();
         bufferWriteSnapshotIsIndependent();
+        depthClearOverridesDisabledWriteMask();
         nativeDebugMessagesAreFilteredAndFormatted();
         nativeDebugCallbackOwnershipIsExplicit();
         System.out.println("OpenGL backend logic checks passed.");
@@ -219,6 +221,18 @@ public final class OpenGLBackendLogicChecks {
                 () -> OpenGLBufferUpdates.validateRange(16, 0, 0));
         expect(IllegalArgumentException.class,
                 () -> OpenGLBufferUpdates.validateRange(Long.MAX_VALUE, Long.MAX_VALUE - 3, 4));
+    }
+
+    private static void depthClearOverridesDisabledWriteMask() {
+        require(OpenGLCommandEncoder.depthClearRequiresMaskOverride(
+                        DepthAttachmentOps.clear(1.0f), false),
+                "depth clear did not override a disabled depth write mask");
+        require(!OpenGLCommandEncoder.depthClearRequiresMaskOverride(
+                        DepthAttachmentOps.clear(1.0f), true),
+                "depth clear unnecessarily overrode an enabled depth write mask");
+        require(!OpenGLCommandEncoder.depthClearRequiresMaskOverride(
+                        DepthAttachmentOps.load(), false),
+                "depth load changed the depth write mask");
     }
 
     private static void assertScissor(

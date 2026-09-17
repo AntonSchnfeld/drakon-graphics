@@ -207,7 +207,7 @@ public final class BackendSpikeMain {
                 GlfwWindow window = platform.createOpenGLWindow(
                         800, 500, "drakon-graphics OpenGL spike")) {
             window.makeContextCurrent();
-            window.disableSwapInterval();
+            window.enableSwapInterval();
             if (!backend.isSupported()) {
                 throw new AssertionError("OpenGL backend did not recognize the current OpenGL 4.3 context");
             }

@@ -26,9 +26,9 @@ final class GlfwWindow implements AutoCloseable {
         glfwMakeContextCurrent(handle);
     }
 
-    void disableSwapInterval() {
+    void enableSwapInterval() {
         requireOpen();
-        glfwSwapInterval(0);
+        glfwSwapInterval(1);
     }
 
     boolean shouldClose() {
