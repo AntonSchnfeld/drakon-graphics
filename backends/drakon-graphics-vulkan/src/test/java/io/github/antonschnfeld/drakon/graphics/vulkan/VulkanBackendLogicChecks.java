@@ -51,6 +51,7 @@ public final class VulkanBackendLogicChecks {
         bufferUpdatePlanningIsExact();
         swapchainExtentPlanningHandlesZeroAndVariableExtents();
         swapchainRecreationLifecycleDefersAndRecovers();
+        skippedPresentationIsBackendPrivateAndOneShot();
         System.out.println("Vulkan backend logic checks passed.");
     }
 
@@ -382,6 +383,20 @@ public final class VulkanBackendLogicChecks {
                 "successful retry did not increment completed recreation count");
         require(target.swapchainWidth == 1280 && target.swapchainHeight == 720,
                 "successful retry did not preserve its new target extent");
+    }
+
+    private static void skippedPresentationIsBackendPrivateAndOneShot() {
+        VulkanSkippedPresentation skipped = new VulkanSkippedPresentation();
+        require(!skipped.consume(), "normal presentation was mistaken for a skipped frame");
+
+        skipped.submit();
+        skipped.submit();
+        require(skipped.consume(), "submitted skipped presentations were not consumed");
+        require(!skipped.consume(), "skipped presentation was consumed more than once");
+
+        skipped.submit();
+        skipped.clear();
+        require(!skipped.consume(), "successful acquisition did not clear a stale skipped frame");
     }
 
     private static void assertUpdatePlan(long offset, long size, int expectedChunks) {

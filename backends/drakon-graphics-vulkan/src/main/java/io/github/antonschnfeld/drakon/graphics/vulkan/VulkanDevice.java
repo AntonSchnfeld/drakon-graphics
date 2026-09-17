@@ -487,7 +487,7 @@ public final class VulkanDevice implements GraphicsDevice {
             VulkanPresentationState recordingState) {
         requireOpen();
         target.requireAlive();
-        ensurePresentationAcquired(target);
+        if (!ensurePresentationAcquired(target)) return null;
         VulkanPresentationState state = recordingState;
         if (state == null) {
             state = new VulkanPresentationState(
@@ -560,11 +560,11 @@ public final class VulkanDevice implements GraphicsDevice {
         state.markInitialized();
     }
 
-    private void ensurePresentationAcquired(VulkanPresentationTarget target) {
-        if (target.imageAcquired) return;
+    private boolean ensurePresentationAcquired(VulkanPresentationTarget target) {
+        if (target.imageAcquired) return true;
         if (target.swapchainRecreation.pending() && !recreateSwapchainIfPossible(target)) {
-            throw new IllegalStateException(
-                    "presentation surface is temporarily unavailable because its extent is zero");
+            reportPresentationAcquisitionSkipped();
+            return false;
         }
         FrameSync frame = target.frames[target.frameSlot];
         retireFrame(frame);
@@ -578,8 +578,8 @@ public final class VulkanDevice implements GraphicsDevice {
                 if (result == VK_ERROR_OUT_OF_DATE_KHR) {
                     target.swapchainRecreation.request();
                     if (!recreateSwapchainIfPossible(target)) {
-                        throw new IllegalStateException(
-                                "presentation surface is temporarily unavailable because its extent is zero");
+                        reportPresentationAcquisitionSkipped();
+                        return false;
                     }
                     continue;
                 }
@@ -588,8 +588,16 @@ public final class VulkanDevice implements GraphicsDevice {
                 target.imageIndex = pImage.get(0);
                 target.currentAcquisition = ++target.acquisitionSerial;
                 target.imageAcquired = true;
-                return;
+                target.skippedPresentation.clear();
+                return true;
             }
+        }
+    }
+
+    private void reportPresentationAcquisitionSkipped() {
+        if (config.validation()) {
+            System.out.println(
+                    "[drakon-graphics][vulkan] presentation acquisition skipped: surface extent is zero.");
         }
     }
 
@@ -1438,6 +1446,7 @@ public final class VulkanDevice implements GraphicsDevice {
             throw new IllegalArgumentException("render target has no Vulkan presentation integration");
         }
         if (!presentation.imageAcquired) {
+            if (presentation.skippedPresentation.consume()) return;
             throw new IllegalStateException("presentation target has no acquired image");
         }
         FrameSync frame = presentation.frames[presentation.frameSlot];
@@ -1514,6 +1523,7 @@ public final class VulkanDevice implements GraphicsDevice {
         try {
             list.commandState.validateCommittedStates();
             validatePresentationState(list.presentationState);
+            validateSkippedPresentation(list.skippedPresentationTarget);
         } catch (RuntimeException | Error failure) {
             list.failAndRelease();
             throw failure;
@@ -1579,6 +1589,12 @@ public final class VulkanDevice implements GraphicsDevice {
                     deferredResources.addAll(retained);
                     check(waitResult, "vkQueueWaitIdle");
                 }
+                // A zero-extent acquisition skip has no swapchain image or frame
+                // synchronization to retire. Preserve only a one-shot marker so
+                // the matching public present() remains a clean frame boundary.
+                if (list.skippedPresentationTarget != null) {
+                    list.skippedPresentationTarget.skippedPresentation.submit();
+                }
                 freeCommandBuffer(list.commandBuffer);
                 releaseResources(retained);
             }
@@ -1605,6 +1621,15 @@ public final class VulkanDevice implements GraphicsDevice {
         }
         if (target.swapchainInitialized[state.imageIndex] != state.expectedInitialized) {
             throw new IllegalStateException("presentation image state changed since command-list recording");
+        }
+    }
+
+    private static void validateSkippedPresentation(VulkanPresentationTarget target) {
+        if (target == null) return;
+        target.requireAlive();
+        if (!target.swapchainRecreation.pending() || target.imageAcquired) {
+            throw new IllegalStateException(
+                    "skipped presentation command list is no longer associated with a deferred acquisition");
         }
     }
 

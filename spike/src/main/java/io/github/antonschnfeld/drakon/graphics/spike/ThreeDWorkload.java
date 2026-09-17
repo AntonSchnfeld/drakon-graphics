@@ -59,6 +59,7 @@ final class ThreeDWorkload implements AutoCloseable {
 
     private static final int PRESENTATION_STRESS_FRAMES = 720;
     private static final int MULTI_SUBMIT_START_FRAME = 120;
+    private static final int ACQUISITION_RACE_BEFORE_FRAME = 300;
     private static final int MINIMIZE_BEFORE_FRAME = 500;
     private static final int[] RESIZE_REQUEST_FRAMES = {60, 160, 260, 360, 460};
     private static final int[][] RESIZE_REQUESTS = {
@@ -459,7 +460,8 @@ final class ThreeDWorkload implements AutoCloseable {
                 .build());
     }
 
-    void runPresentationStress(String backendName, GlfwWindow window) {
+    void runPresentationStress(
+            String backendName, GlfwWindow window, boolean exerciseAcquisitionRace) {
         initialize();
         long startNanos = System.nanoTime();
         RenderTarget stableTarget = presentationTarget;
@@ -499,6 +501,12 @@ final class ThreeDWorkload implements AutoCloseable {
             if (frame == MINIMIZE_BEFORE_FRAME) {
                 zeroObservedDuringMinimize = exerciseMinimizeRestore(backendName, window);
                 if (zeroObservedDuringMinimize) zeroExtentPauses++;
+            }
+
+            if (exerciseAcquisitionRace && frame == ACQUISITION_RACE_BEFORE_FRAME) {
+                boolean zeroObserved = exerciseAcquisitionMinimizeRestore(backendName, window);
+                zeroObservedDuringMinimize |= zeroObserved;
+                if (zeroObserved) zeroExtentPauses++;
             }
 
             if (waitWhileFramebufferZero(window)) zeroExtentPauses++;
@@ -544,6 +552,54 @@ final class ThreeDWorkload implements AutoCloseable {
             renderFrame(true);
             window.pollEvents();
         }
+    }
+
+    private boolean exerciseAcquisitionMinimizeRestore(String backendName, GlfwWindow window) {
+        int checkedWidth = window.rawFramebufferWidth();
+        int checkedHeight = window.rawFramebufferHeight();
+        if (checkedWidth <= 0 || checkedHeight <= 0) {
+            throw new IllegalStateException("acquisition-race stress requires a positive initial extent");
+        }
+
+        window.iconify();
+        boolean zeroObserved = false;
+        long observationDeadline = System.nanoTime() + 2_000_000_000L;
+        do {
+            window.waitEvents(0.01);
+            zeroObserved = window.rawFramebufferWidth() == 0 || window.rawFramebufferHeight() == 0;
+            if (zeroObserved) break;
+        } while (System.nanoTime() < observationDeadline);
+
+        System.out.printf(Locale.ROOT,
+                "%s acquisition-race stress: positive check=%dx%d, iconified=%s, raw=%dx%d, "
+                        + "zeroObserved=%s.%n",
+                backendName,
+                checkedWidth,
+                checkedHeight,
+                window.isIconified(),
+                window.rawFramebufferWidth(),
+                window.rawFramebufferHeight(),
+                zeroObserved);
+        if (zeroObserved) {
+            // Simulate the frame already committed by the application after its
+            // positive check, then one retry while backend recreation is pending.
+            renderFrame(true);
+            renderFrame(true);
+        }
+
+        window.restore();
+        long restoreDeadline = System.nanoTime() + 5_000_000_000L;
+        while (window.rawFramebufferWidth() == 0 || window.rawFramebufferHeight() == 0) {
+            if (System.nanoTime() >= restoreDeadline) {
+                throw new IllegalStateException("GLFW framebuffer did not become renderable after restore");
+            }
+            window.waitEvents(0.05);
+        }
+        window.pollEvents();
+        System.out.printf(Locale.ROOT,
+                "%s acquisition-race restore: raw=%dx%d; same workload continues.%n",
+                backendName, window.rawFramebufferWidth(), window.rawFramebufferHeight());
+        return zeroObserved;
     }
 
     private static boolean exerciseMinimizeRestore(String backendName, GlfwWindow window) {

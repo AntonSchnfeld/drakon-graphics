@@ -24,6 +24,7 @@ final class VulkanPresentationTarget extends VulkanTarget {
     long currentAcquisition;
     boolean imageAcquired;
     final VulkanSwapchainRecreation swapchainRecreation = new VulkanSwapchainRecreation();
+    final VulkanSkippedPresentation skippedPresentation = new VulkanSkippedPresentation();
 
     VulkanPresentationTarget(VulkanDevice device, VulkanSurfaceFactory surfaceFactory, long surface) {
         super(device);
