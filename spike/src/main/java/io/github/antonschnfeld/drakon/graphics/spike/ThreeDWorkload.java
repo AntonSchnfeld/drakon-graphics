@@ -11,6 +11,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.Binding;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingLayout;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingSet;
 import io.github.antonschnfeld.drakon.graphics.resource.BindingSetDescriptor;
+import io.github.antonschnfeld.drakon.graphics.resource.BlendState;
 import io.github.antonschnfeld.drakon.graphics.resource.Buffer;
 import io.github.antonschnfeld.drakon.graphics.resource.BufferBinding;
 import io.github.antonschnfeld.drakon.graphics.resource.BufferDescriptor;
@@ -60,9 +61,16 @@ final class ThreeDWorkload implements AutoCloseable {
     private static final int OFFSCREEN_WIDTH = 800;
     private static final int OFFSCREEN_HEIGHT = 500;
     private static final int CUBE_INDEX_COUNT = 36;
+    private static final int PANEL_INDEX_COUNT = 6;
+    private static final int TRANSPARENT_INSTANCE_COUNT = 4;
+    private static final int TRANSPARENT_INSTANCE_BUFFER_BYTES = TRANSPARENT_INSTANCE_COUNT * INSTANCE_STRIDE;
     private static final int NEAR_INSTANCE = 0;
     private static final int FAR_INSTANCE = 1;
     private static final int SIDE_INSTANCE = 2;
+    private static final int FAR_PANEL_INSTANCE = 0;
+    private static final int NEAR_PANEL_INSTANCE = 1;
+    private static final int ZERO_ALPHA_MARKER_INSTANCE = 2;
+    private static final int ONE_ALPHA_MARKER_INSTANCE = 3;
 
     private static final String OPENGL_SCENE_VERTEX = """
             #version 430
@@ -166,6 +174,9 @@ final class ThreeDWorkload implements AutoCloseable {
     private final Buffer cubeVertexBuffer;
     private final Buffer cubeIndexBuffer;
     private final Buffer instanceBuffer;
+    private final Buffer panelVertexBuffer;
+    private final Buffer panelIndexBuffer;
+    private final Buffer transparentInstanceBuffer;
     private final Buffer cameraBuffer;
     private final Buffer presentVertexBuffer;
     private final Buffer presentIndexBuffer;
@@ -176,6 +187,7 @@ final class ThreeDWorkload implements AutoCloseable {
     private final BindingSet cameraBindingSet;
     private final BindingSet presentBindingSet;
     private final GraphicsState sceneState;
+    private final GraphicsState transparentState;
     private final GraphicsState presentState;
     private final ByteBuffer cameraData = ByteBuffer.allocate(16 * Float.BYTES).order(ByteOrder.nativeOrder());
     private final ByteBuffer instanceData = ByteBuffer.allocate(INSTANCE_BUFFER_BYTES).order(ByteOrder.nativeOrder());
@@ -244,6 +256,15 @@ final class ThreeDWorkload implements AutoCloseable {
                 cubeIndices());
         instanceBuffer = device.createBuffer(
                 new BufferDescriptor(INSTANCE_BUFFER_BYTES, Set.of(BufferUsage.VERTEX)));
+        panelVertexBuffer = device.createBuffer(
+                new BufferDescriptor(4L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
+                panelVertices());
+        panelIndexBuffer = device.createBuffer(
+                new BufferDescriptor(PANEL_INDEX_COUNT * (long) Short.BYTES, Set.of(BufferUsage.INDEX)),
+                panelIndices());
+        transparentInstanceBuffer = device.createBuffer(
+                new BufferDescriptor(TRANSPARENT_INSTANCE_BUFFER_BYTES, Set.of(BufferUsage.VERTEX)),
+                transparentInstances());
         cameraBuffer = device.createBuffer(
                 new BufferDescriptor(16L * Float.BYTES, Set.of(BufferUsage.UNIFORM)));
         presentVertexBuffer = device.createBuffer(
@@ -303,6 +324,27 @@ final class ThreeDWorkload implements AutoCloseable {
                 .colorFormat(TextureFormat.RGBA8_UNORM)
                 .depthFormat(TextureFormat.D32_FLOAT)
                 .build());
+        transparentState = device.createGraphicsState(GraphicsStateDescriptor.builder()
+                .vertexShader(sceneVertex)
+                .fragmentShader(sceneFragment)
+                .vertexLayout(VertexLayout.builder()
+                        .binding(0, 5 * Float.BYTES, VertexInputRate.PER_VERTEX)
+                        .attribute(0, 0, VertexFormat.FLOAT3, 0)
+                        .attribute(1, 0, VertexFormat.FLOAT2, 3 * Float.BYTES)
+                        .binding(1, INSTANCE_STRIDE, VertexInputRate.PER_INSTANCE)
+                        .attribute(2, 1, VertexFormat.FLOAT4, 0)
+                        .attribute(3, 1, VertexFormat.FLOAT4, 4 * Float.BYTES)
+                        .attribute(4, 1, VertexFormat.FLOAT4, 8 * Float.BYTES)
+                        .attribute(5, 1, VertexFormat.FLOAT4, 12 * Float.BYTES)
+                        .attribute(6, 1, VertexFormat.FLOAT4, 16 * Float.BYTES)
+                        .build())
+                .bindingLayout(cameraLayout)
+                .depth(DepthState.readOnly())
+                .blend(BlendState.alphaBlend())
+                .raster(new RasterState(CullMode.NONE))
+                .colorFormat(TextureFormat.RGBA8_UNORM)
+                .depthFormat(TextureFormat.D32_FLOAT)
+                .build());
         presentState = device.createGraphicsState(GraphicsStateDescriptor.builder()
                 .vertexShader(presentVertex)
                 .fragmentShader(presentFragment)
@@ -326,7 +368,7 @@ final class ThreeDWorkload implements AutoCloseable {
         }
         double seconds = elapsedSeconds(startNanos);
         System.out.printf(Locale.ROOT,
-                "%s 3D acceptance: %d frames in %.3f s (%.1f FPS).%n",
+                "%s 3D alpha acceptance: %d frames in %.3f s (%.1f FPS).%n",
                 backendName, ACCEPTANCE_FRAMES, seconds, ACCEPTANCE_FRAMES / seconds);
     }
 
@@ -344,6 +386,9 @@ final class ThreeDWorkload implements AutoCloseable {
             commands.transition(cubeVertexBuffer, ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
             commands.transition(cubeIndexBuffer, ResourceState.UNDEFINED, ResourceState.INDEX_READ);
             commands.transition(instanceBuffer, ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
+            commands.transition(panelVertexBuffer, ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
+            commands.transition(panelIndexBuffer, ResourceState.UNDEFINED, ResourceState.INDEX_READ);
+            commands.transition(transparentInstanceBuffer, ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
             commands.transition(cameraBuffer, ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
             commands.transition(presentVertexBuffer, ResourceState.UNDEFINED, ResourceState.VERTEX_READ);
             commands.transition(presentIndexBuffer, ResourceState.UNDEFINED, ResourceState.INDEX_READ);
@@ -373,6 +418,19 @@ final class ThreeDWorkload implements AutoCloseable {
             commands.drawIndexed(CUBE_INDEX_COUNT, 1, 0, 0, NEAR_INSTANCE);
             commands.drawIndexed(CUBE_INDEX_COUNT, 1, 0, 0, FAR_INSTANCE);
             commands.drawIndexed(CUBE_INDEX_COUNT, 1, 0, 0, SIDE_INSTANCE);
+
+            commands.setGraphicsState(transparentState);
+            commands.setVertexBuffer(0, panelVertexBuffer, 0);
+            commands.setVertexBuffer(1, transparentInstanceBuffer, 0);
+            commands.setIndexBuffer(panelIndexBuffer, IndexType.UINT16, 0);
+            commands.bindSet(0, cameraBindingSet);
+            // Transparent draws are application-ordered back-to-front. Their
+            // read-only depth state tests opaque depth without changing it.
+            commands.drawIndexed(PANEL_INDEX_COUNT, 1, 0, 0, FAR_PANEL_INSTANCE);
+            commands.drawIndexed(PANEL_INDEX_COUNT, 1, 0, 0, NEAR_PANEL_INSTANCE);
+            // Small persistent markers exercise alpha=0 and alpha=1 RGB boundaries.
+            commands.drawIndexed(PANEL_INDEX_COUNT, 1, 0, 0, ZERO_ALPHA_MARKER_INSTANCE);
+            commands.drawIndexed(PANEL_INDEX_COUNT, 1, 0, 0, ONE_ALPHA_MARKER_INSTANCE);
             commands.endRendering();
 
             commands.transition(
@@ -487,6 +545,55 @@ final class ThreeDWorkload implements AutoCloseable {
         return indices.flip();
     }
 
+    private static ByteBuffer panelVertices() {
+        return ByteBuffer.allocate(4 * 5 * Float.BYTES).order(ByteOrder.nativeOrder())
+                .putFloat(-1).putFloat(-1).putFloat(0).putFloat(0).putFloat(0)
+                .putFloat(1).putFloat(-1).putFloat(0).putFloat(1).putFloat(0)
+                .putFloat(1).putFloat(1).putFloat(0).putFloat(1).putFloat(1)
+                .putFloat(-1).putFloat(1).putFloat(0).putFloat(0).putFloat(1)
+                .flip();
+    }
+
+    private static ByteBuffer panelIndices() {
+        return ByteBuffer.allocate(PANEL_INDEX_COUNT * Short.BYTES).order(ByteOrder.nativeOrder())
+                .putShort((short) 0).putShort((short) 1).putShort((short) 2)
+                .putShort((short) 2).putShort((short) 3).putShort((short) 0)
+                .flip();
+    }
+
+    private static ByteBuffer transparentInstances() {
+        ByteBuffer instances = ByteBuffer.allocate(TRANSPARENT_INSTANCE_BUFFER_BYTES)
+                .order(ByteOrder.nativeOrder());
+        // Deliberately non-premultiplied RGB: far orange, then near cyan.
+        putInstance(instances, transform(-0.35f, 0.10f, -1.75f, 1.65f, 1.05f),
+                1.0f, 0.22f, 0.05f, 0.45f);
+        putInstance(instances, transform(0.25f, -0.05f, 1.25f, 1.45f, 0.90f),
+                0.05f, 0.95f, 0.85f, 0.55f);
+        putInstance(instances, transform(-2.15f, 1.30f, 1.45f, 0.16f, 0.16f),
+                1.0f, 0.0f, 1.0f, 0.0f);
+        putInstance(instances, transform(-1.75f, 1.30f, 1.45f, 0.16f, 0.16f),
+                1.0f, 0.95f, 0.10f, 1.0f);
+        return instances.flip();
+    }
+
+    private static float[] transform(float x, float y, float z, float scaleX, float scaleY) {
+        float[] transform = ThreeDMath.translation(x, y, z);
+        transform[0] = scaleX;
+        transform[5] = scaleY;
+        return transform;
+    }
+
+    private static void putInstance(
+            ByteBuffer destination,
+            float[] model,
+            float red,
+            float green,
+            float blue,
+            float alpha) {
+        ThreeDMath.put(destination, model);
+        destination.putFloat(red).putFloat(green).putFloat(blue).putFloat(alpha);
+    }
+
     private static ByteBuffer presentVertices() {
         return ByteBuffer.allocate(4 * 4 * Float.BYTES).order(ByteOrder.nativeOrder())
                 .putFloat(-1).putFloat(1).putFloat(0).putFloat(0)
@@ -510,6 +617,7 @@ final class ThreeDWorkload implements AutoCloseable {
     @Override
     public void close() {
         presentState.close();
+        transparentState.close();
         sceneState.close();
         presentBindingSet.close();
         cameraBindingSet.close();
@@ -520,6 +628,9 @@ final class ThreeDWorkload implements AutoCloseable {
         presentIndexBuffer.close();
         presentVertexBuffer.close();
         cameraBuffer.close();
+        transparentInstanceBuffer.close();
+        panelIndexBuffer.close();
+        panelVertexBuffer.close();
         instanceBuffer.close();
         cubeIndexBuffer.close();
         cubeVertexBuffer.close();
