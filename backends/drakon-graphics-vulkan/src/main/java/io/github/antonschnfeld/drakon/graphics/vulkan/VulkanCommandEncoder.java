@@ -25,6 +25,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
     private final boolean validation;
     private boolean rendering;
     private boolean nativeRendering;
+    private boolean presentationRenderingSkipped;
     private boolean finished;
     private VulkanGraphicsState graphicsState;
     private VulkanTarget renderTarget;
@@ -65,9 +66,11 @@ final class VulkanCommandEncoder implements CommandEncoder {
         }
         try {
             presentationState = target.prepareForRendering(commandBuffer, presentationState);
+            presentationRenderingSkipped = target instanceof VulkanPresentationTarget
+                    && presentationState == null;
             VulkanValidation.ClippedScissor effective = VulkanValidation.clipScissor(
                     info.scissor(), target.width(), target.height());
-            nativeRendering = !effective.empty();
+            nativeRendering = !presentationRenderingSkipped && !effective.empty();
 
             if (nativeRendering) try (Arena arena = Arena.ofConfined()) {
                 VkRenderingAttachmentInfo.Buffer colors = VulkanFfm.structBuffer(arena, VkRenderingAttachmentInfo.SIZEOF, VkRenderingAttachmentInfo.ALIGNOF, target.colorFormats().size(), VkRenderingAttachmentInfo::create);
@@ -136,13 +139,16 @@ final class VulkanCommandEncoder implements CommandEncoder {
             renderTarget.requireAlive();
             for (VulkanResource dependency : renderTarget.dependencies()) dependency.requireAlive();
             if (nativeRendering) vkCmdEndRendering(commandBuffer);
-            renderTarget.finishRendering(commandBuffer, presentationState);
+            if (!presentationRenderingSkipped) {
+                renderTarget.finishRendering(commandBuffer, presentationState);
+            }
         } catch (RuntimeException | Error failure) {
             failRecording();
             throw failure;
         }
         rendering = false;
         nativeRendering = false;
+        presentationRenderingSkipped = false;
         renderTarget = null;
     }
 
@@ -580,12 +586,15 @@ final class VulkanCommandEncoder implements CommandEncoder {
             VulkanDevice.check(vkEndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
             VulkanCommandState commandState = states.finish();
             VulkanPresentationState commandPresentationState = presentationState;
+            VulkanPresentationTarget skippedPresentationTarget = commandPresentationState == null
+                    ? presentationTarget : null;
             List<VulkanResource> commandResources = new ArrayList<>(resources);
             finished = true;
             VulkanCommandList result = new VulkanCommandList(
                     device,
                     commandBuffer,
                     commandPresentationState,
+                    skippedPresentationTarget,
                     commandState,
                     commandResources);
             clearCapturedState();
@@ -641,6 +650,7 @@ final class VulkanCommandEncoder implements CommandEncoder {
         indexType = null;
         indexOffset = 0L;
         nativeRendering = false;
+        presentationRenderingSkipped = false;
     }
 
     private record VertexBufferBinding(VulkanBuffer buffer, long offset) {}

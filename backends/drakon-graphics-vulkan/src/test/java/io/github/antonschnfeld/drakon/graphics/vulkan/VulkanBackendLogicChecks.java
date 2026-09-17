@@ -49,6 +49,9 @@ public final class VulkanBackendLogicChecks {
         ffmScratchViewsHaveExactNativeLayout();
         mappedCopyUsesTheSelectedRange();
         bufferUpdatePlanningIsExact();
+        swapchainExtentPlanningHandlesZeroAndVariableExtents();
+        swapchainRecreationLifecycleDefersAndRecovers();
+        skippedPresentationIsBackendPrivateAndOneShot();
         System.out.println("Vulkan backend logic checks passed.");
     }
 
@@ -326,6 +329,74 @@ public final class VulkanBackendLogicChecks {
         assertUpdatePlan(4, Integer.MAX_VALUE - 3L,
                 (int) ((Integer.MAX_VALUE - 3L + VulkanBufferUpdates.MAX_UPDATE_BYTES - 1L)
                         / VulkanBufferUpdates.MAX_UPDATE_BYTES));
+    }
+
+    private static void swapchainExtentPlanningHandlesZeroAndVariableExtents() {
+        VulkanSwapchainExtent.Plan fixed = VulkanSwapchainExtent.plan(
+                800, 600,
+                () -> { throw new AssertionError("fixed extent queried surface width"); },
+                () -> { throw new AssertionError("fixed extent queried surface height"); },
+                64, 64, 4096, 4096);
+        require(fixed.recreatable() && fixed.width() == 800 && fixed.height() == 600,
+                "fixed positive extent was not recreatable");
+
+        assertDeferredExtent(0, 600);
+        assertDeferredExtent(800, 0);
+        assertDeferredExtent(0, 0);
+
+        VulkanSwapchainExtent.Plan variable = VulkanSwapchainExtent.plan(
+                VulkanSwapchainExtent.VARIABLE,
+                VulkanSwapchainExtent.VARIABLE,
+                () -> 2000,
+                () -> 120,
+                320, 240, 1280, 720);
+        require(variable.recreatable() && variable.width() == 1280 && variable.height() == 240,
+                "variable extent did not use and clamp the surface-factory extent");
+    }
+
+    private static void assertDeferredExtent(int width, int height) {
+        VulkanSwapchainExtent.Plan extent = VulkanSwapchainExtent.plan(
+                width, height,
+                () -> { throw new AssertionError("fixed zero extent queried surface width"); },
+                () -> { throw new AssertionError("fixed zero extent queried surface height"); },
+                64, 64, 4096, 4096);
+        require(!extent.recreatable(), "zero fixed extent was considered recreatable");
+    }
+
+    private static void swapchainRecreationLifecycleDefersAndRecovers() {
+        VulkanPresentationTarget target = new VulkanPresentationTarget(null, null, 0L);
+        target.swapchainWidth = 800;
+        target.swapchainHeight = 600;
+
+        target.swapchainRecreation.request();
+        require(target.swapchainRecreation.pending(), "recreation request was not retained");
+        require(target.swapchainRecreation.completedCount() == 0,
+                "deferred recreation counted as completed");
+        require(target.swapchainWidth == 800 && target.swapchainHeight == 600,
+                "deferred recreation changed the last valid target extent");
+
+        target.swapchainWidth = 1280;
+        target.swapchainHeight = 720;
+        target.swapchainRecreation.complete();
+        require(!target.swapchainRecreation.pending(), "successful retry left recreation pending");
+        require(target.swapchainRecreation.completedCount() == 1,
+                "successful retry did not increment completed recreation count");
+        require(target.swapchainWidth == 1280 && target.swapchainHeight == 720,
+                "successful retry did not preserve its new target extent");
+    }
+
+    private static void skippedPresentationIsBackendPrivateAndOneShot() {
+        VulkanSkippedPresentation skipped = new VulkanSkippedPresentation();
+        require(!skipped.consume(), "normal presentation was mistaken for a skipped frame");
+
+        skipped.submit();
+        skipped.submit();
+        require(skipped.consume(), "submitted skipped presentations were not consumed");
+        require(!skipped.consume(), "skipped presentation was consumed more than once");
+
+        skipped.submit();
+        skipped.clear();
+        require(!skipped.consume(), "successful acquisition did not clear a stale skipped frame");
     }
 
     private static void assertUpdatePlan(long offset, long size, int expectedChunks) {

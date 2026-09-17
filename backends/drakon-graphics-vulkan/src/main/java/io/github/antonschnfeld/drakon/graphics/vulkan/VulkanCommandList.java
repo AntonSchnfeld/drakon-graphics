@@ -10,6 +10,7 @@ final class VulkanCommandList implements CommandList {
     final VulkanDevice device;
     final VkCommandBuffer commandBuffer;
     final VulkanPresentationState presentationState;
+    final VulkanPresentationTarget skippedPresentationTarget;
     final VulkanCommandState commandState;
     final List<VulkanResource> resources;
     private final VulkanCommandOwnership ownership = new VulkanCommandOwnership();
@@ -18,11 +19,13 @@ final class VulkanCommandList implements CommandList {
             VulkanDevice device,
             VkCommandBuffer commandBuffer,
             VulkanPresentationState presentationState,
+            VulkanPresentationTarget skippedPresentationTarget,
             VulkanCommandState commandState,
             List<VulkanResource> resources) {
         this.device = device;
         this.commandBuffer = commandBuffer;
         this.presentationState = presentationState;
+        this.skippedPresentationTarget = skippedPresentationTarget;
         this.commandState = commandState;
         this.resources = List.copyOf(resources);
     }

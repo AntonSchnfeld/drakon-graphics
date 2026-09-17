@@ -249,7 +249,7 @@ public final class BackendSpikeMain {
                             }
                         }
                         try (ThreeDWorkload workload = ThreeDWorkload.createOpenGL(device, target)) {
-                            workload.runPresentationStress("OpenGL", window);
+                            workload.runPresentationStress("OpenGL", window, false);
                             if (interactive) {
                                 workload.runInteractive(window);
                             }
@@ -315,7 +315,7 @@ public final class BackendSpikeMain {
                                     device, target, mesh, window::pollEvents, "Vulkan", animationStartNanos);
                         }
                         try (ThreeDWorkload workload = ThreeDWorkload.createVulkan(device, target)) {
-                            workload.runPresentationStress("Vulkan", window);
+                            workload.runPresentationStress("Vulkan", window, true);
                             if (interactive) {
                                 workload.runInteractive(window);
                             }
