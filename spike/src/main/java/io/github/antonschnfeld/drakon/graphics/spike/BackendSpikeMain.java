@@ -176,23 +176,29 @@ public final class BackendSpikeMain {
     /**
      * Runs one or both windowed backend smoke tests.
      *
-     * @param args optional {@code opengl}, {@code vulkan}, or {@code both};
-     *             default is {@code both}
+     * @param args optional {@code opengl}, {@code vulkan}, or {@code both},
+     *             followed by optional {@code finite}; defaults to both backends
+     *             with interactive windows
      */
     public static void main(String[] args) {
+        if (args.length > 2 || (args.length == 2 && !"finite".equalsIgnoreCase(args[1]))) {
+            throw new IllegalArgumentException(
+                    "expected opengl, vulkan, or both, optionally followed by finite");
+        }
         String backend = args.length == 0 ? "both" : args[0].toLowerCase(Locale.ROOT);
+        boolean interactive = args.length < 2;
         switch (backend) {
-            case "opengl" -> runOpenGL();
-            case "vulkan" -> runVulkan();
+            case "opengl" -> runOpenGL(interactive);
+            case "vulkan" -> runVulkan(interactive);
             case "both" -> {
-                runOpenGL();
-                runVulkan();
+                runOpenGL(interactive);
+                runVulkan(interactive);
             }
             default -> throw new IllegalArgumentException("expected opengl, vulkan, or both");
         }
     }
 
-    private static void runOpenGL() {
+    private static void runOpenGL(boolean interactive) {
         OpenGLBackend backend = new OpenGLBackend();
         if (backend.isSupported()) {
             throw new AssertionError("OpenGL backend reported support without an externally current context");
@@ -201,7 +207,7 @@ public final class BackendSpikeMain {
                 GlfwWindow window = platform.createOpenGLWindow(
                         800, 500, "drakon-graphics OpenGL spike")) {
             window.makeContextCurrent();
-            window.disableSwapInterval();
+            window.enableSwapInterval();
             if (!backend.isSupported()) {
                 throw new AssertionError("OpenGL backend did not recognize the current OpenGL 4.3 context");
             }
@@ -241,9 +247,12 @@ public final class BackendSpikeMain {
                             if (glGetInteger(GL_COPY_WRITE_BUFFER) != copyWriteBinding) {
                                 throw new AssertionError("OpenGL buffer writes changed external copy-write binding");
                             }
-                            runDynamicWindowLoop(
-                                    device, target, mesh, window::shouldClose, window::pollEvents,
-                                    animationStartNanos);
+                        }
+                        try (ThreeDWorkload workload = ThreeDWorkload.createOpenGL(device, target)) {
+                            workload.runAcceptance("OpenGL", window::pollEvents);
+                            if (interactive) {
+                                workload.runInteractive(window::shouldClose, window::pollEvents);
+                            }
                         }
                     }
                 }
@@ -256,7 +265,7 @@ public final class BackendSpikeMain {
         }
     }
 
-    private static void runVulkan() {
+    private static void runVulkan(boolean interactive) {
         VulkanBackend backend = new VulkanBackend();
         if (!backend.isSupported()) {
             throw new AssertionError("Vulkan backend cannot create its headless Vulkan 1.3 device");
@@ -298,9 +307,12 @@ public final class BackendSpikeMain {
                             long animationStartNanos = System.nanoTime();
                             runDynamicBufferStress(
                                     device, target, mesh, window::pollEvents, "Vulkan", animationStartNanos);
-                            runDynamicWindowLoop(
-                                    device, target, mesh, window::shouldClose, window::pollEvents,
-                                    animationStartNanos);
+                        }
+                        try (ThreeDWorkload workload = ThreeDWorkload.createVulkan(device, target)) {
+                            workload.runAcceptance("Vulkan", window::pollEvents);
+                            if (interactive) {
+                                workload.runInteractive(window::shouldClose, window::pollEvents);
+                            }
                         }
                     }
                 }
@@ -646,21 +658,6 @@ public final class BackendSpikeMain {
                 backendName, DYNAMIC_STRESS_FRAMES, stressSeconds, framesPerSecond);
     }
 
-    private static void runDynamicWindowLoop(
-            GraphicsDevice device,
-            RenderTarget target,
-            DynamicMesh mesh,
-            BooleanSupplier shouldClose,
-            Runnable pollEvents,
-            long animationStartNanos) {
-        Renderer renderer = new Renderer(device);
-        while (!shouldClose.getAsBoolean()) {
-            renderDynamicFrame(renderer, target, mesh, animationPhase(animationStartNanos));
-            device.present(target);
-            pollEvents.run();
-        }
-    }
-
     private static void renderDynamicFrame(
             Renderer renderer, RenderTarget target, DynamicMesh mesh, double phase) {
         ByteBuffer frameData = dynamicFrameData(phase);
@@ -813,7 +810,7 @@ public final class BackendSpikeMain {
     }
 
     /** Compiles GLSL solely for the Vulkan smoke harness, not the backend. */
-    private static ByteBuffer compileSpirv(String source, int kind) {
+    static ByteBuffer compileSpirv(String source, int kind) {
         long compiler = shaderc_compiler_initialize();
         if (compiler == 0L) throw new IllegalStateException("shaderc_compiler_initialize failed");
         long options = shaderc_compile_options_initialize();

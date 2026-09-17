@@ -103,6 +103,19 @@
                 <configuration>
                     <mainClass>io.github.antonschnfeld.drakon.graphics.spike.BackendSpikeMain</mainClass>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>run-three-d-math-checks</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>io.github.antonschnfeld.drakon.graphics.spike.ThreeDMathChecks</mainClass>
+                            <classpathScope>test</classpathScope>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

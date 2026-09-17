@@ -100,12 +100,29 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         }
         info.depth().ifPresent(ops -> {
             if (ops.loadOp() == LoadOp.CLEAR) {
-                glClearBufferfv(GL_DEPTH, 0, new float[]{ops.clearDepth()});
+                clearDepth(ops);
             } else if (ops.loadOp() == LoadOp.DONT_CARE) {
                 invalidateAtStart.add(GL_DEPTH_ATTACHMENT);
             }
         });
         invalidate(target, invalidateAtStart);
+    }
+
+    private static void clearDepth(DepthAttachmentOps ops) {
+        // Clear commands must not inherit a disabled write mask from a
+        // previously bound depth-disabled graphics state.
+        boolean depthWriteMask = glGetBoolean(GL_DEPTH_WRITEMASK);
+        boolean overrideMask = depthClearRequiresMaskOverride(ops, depthWriteMask);
+        if (overrideMask) glDepthMask(true);
+        try {
+            glClearBufferfv(GL_DEPTH, 0, new float[]{ops.clearDepth()});
+        } finally {
+            if (overrideMask) glDepthMask(false);
+        }
+    }
+
+    static boolean depthClearRequiresMaskOverride(DepthAttachmentOps ops, boolean depthWriteMask) {
+        return ops.loadOp() == LoadOp.CLEAR && !depthWriteMask;
     }
 
     @Override
