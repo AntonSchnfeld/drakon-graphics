@@ -40,6 +40,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.VertexLayout;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderCode;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
 
+import java.lang.foreign.Arena;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -56,7 +57,7 @@ public final class ReferenceRenderer implements AutoCloseable {
     private final GraphicsDevice device;
     private final RenderTarget presentationTarget;
     private final Renderer renderer;
-    private final ReferenceScene scene = new ReferenceScene();
+    private final ReferenceScene scene;
     private final Buffer cubeVertexBuffer;
     private final Buffer cubeIndexBuffer;
     private final Buffer instanceBuffer;
@@ -97,45 +98,46 @@ public final class ReferenceRenderer implements AutoCloseable {
         Objects.requireNonNull(shaders, "shaders");
         renderer = new Renderer(device);
 
-        cubeVertexBuffer = device.createBuffer(
-                new BufferDescriptor(24L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                SceneGeometry.cubeVertices());
-        cubeIndexBuffer = device.createBuffer(
-                new BufferDescriptor(
-                        SceneGeometry.CUBE_INDEX_COUNT * (long) Short.BYTES,
-                        Set.of(BufferUsage.INDEX)),
-                SceneGeometry.cubeIndices());
+        try (Arena geometryArena = Arena.ofConfined()) {
+            cubeVertexBuffer = device.createBuffer(
+                    new BufferDescriptor(24L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
+                    SceneGeometry.cubeVertices(geometryArena));
+            cubeIndexBuffer = device.createBuffer(
+                    new BufferDescriptor(
+                            SceneGeometry.CUBE_INDEX_COUNT * (long) Short.BYTES,
+                            Set.of(BufferUsage.INDEX)),
+                    SceneGeometry.cubeIndices(geometryArena));
+            panelVertexBuffer = device.createBuffer(
+                    new BufferDescriptor(4L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
+                    SceneGeometry.panelVertices(geometryArena));
+            panelIndexBuffer = device.createBuffer(
+                    new BufferDescriptor(
+                            SceneGeometry.PANEL_INDEX_COUNT * (long) Short.BYTES,
+                            Set.of(BufferUsage.INDEX)),
+                    SceneGeometry.panelIndices(geometryArena));
+            presentVertexBuffer = device.createBuffer(
+                    new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
+                    SceneGeometry.fullscreenVertices(geometryArena));
+            presentIndexBuffer = device.createBuffer(
+                    new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)),
+                    SceneGeometry.fullscreenIndices(geometryArena));
+            sceneTexture = device.createTexture(
+                    new TextureDescriptor(
+                            SceneGeometry.TEXTURE_SIZE,
+                            SceneGeometry.TEXTURE_SIZE,
+                            TextureFormat.RGBA8_UNORM,
+                            Set.of(TextureUsage.SAMPLED)),
+                    SceneGeometry.checkerTexture(geometryArena),
+                    ResourceState.SAMPLED_READ);
+        }
         instanceBuffer = device.createBuffer(
                 new BufferDescriptor(
                         ReferenceScene.OBJECT_COUNT * (long) ReferenceScene.INSTANCE_STRIDE,
                         Set.of(BufferUsage.VERTEX)));
-        panelVertexBuffer = device.createBuffer(
-                new BufferDescriptor(4L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                SceneGeometry.panelVertices());
-        panelIndexBuffer = device.createBuffer(
-                new BufferDescriptor(
-                        SceneGeometry.PANEL_INDEX_COUNT * (long) Short.BYTES,
-                        Set.of(BufferUsage.INDEX)),
-                SceneGeometry.panelIndices());
         panelInstanceBuffer = device.createBuffer(
                 new BufferDescriptor(ReferenceScene.INSTANCE_STRIDE, Set.of(BufferUsage.VERTEX)));
         cameraBuffer = device.createBuffer(
                 new BufferDescriptor(16L * Float.BYTES, Set.of(BufferUsage.UNIFORM)));
-        presentVertexBuffer = device.createBuffer(
-                new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                SceneGeometry.fullscreenVertices());
-        presentIndexBuffer = device.createBuffer(
-                new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)),
-                SceneGeometry.fullscreenIndices());
-
-        sceneTexture = device.createTexture(
-                new TextureDescriptor(
-                        SceneGeometry.TEXTURE_SIZE,
-                        SceneGeometry.TEXTURE_SIZE,
-                        TextureFormat.RGBA8_UNORM,
-                        Set.of(TextureUsage.SAMPLED)),
-                SceneGeometry.checkerTexture(),
-                ResourceState.SAMPLED_READ);
         sceneSampler = device.createSampler(new SamplerDescriptor(
                 SamplerDescriptor.Filter.NEAREST,
                 SamplerDescriptor.Filter.NEAREST,
@@ -172,6 +174,7 @@ public final class ReferenceRenderer implements AutoCloseable {
         offscreen = createOffscreen(presentationTarget.width(), presentationTarget.height());
 
         initializeResourceStates(offscreen);
+        scene = new ReferenceScene();
     }
 
     /**
@@ -405,6 +408,7 @@ public final class ReferenceRenderer implements AutoCloseable {
         instanceBuffer.close();
         cubeIndexBuffer.close();
         cubeVertexBuffer.close();
+        scene.close();
     }
 
     /** Explicit ownership bundle for attachments recreated on resize. */

@@ -11,6 +11,7 @@ import io.github.antonschnfeld.drakon.graphics.shader.VulkanShaderTarget;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
@@ -97,7 +98,9 @@ final class ShaderResources {
                     }
                     ByteBuffer bytes = shaderc_result_get_bytes(result);
                     if (bytes == null) throw new IllegalStateException("shaderc returned no SPIR-V bytes");
-                    return new SpirvShaderCode(bytes);
+                    // SpirvShaderCode snapshots this Shaderc-owned view before
+                    // shaderc_result_release invalidates the native result memory.
+                    return new SpirvShaderCode(MemorySegment.ofBuffer(bytes));
                 } finally {
                     if (result != 0L) shaderc_result_release(result);
                 }

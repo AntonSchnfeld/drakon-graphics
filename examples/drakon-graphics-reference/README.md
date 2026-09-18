@@ -44,11 +44,15 @@ Start with these classes:
 - `ReferenceRenderer` is the backend-neutral Drakon rendering algorithm and owns
   the portable GPU resources it creates.
 - `ReferenceScene` uses JOML for perspective, view, model, and animation transforms,
-  then packs the changing matrices into persistent buffers written each frame.
+  then packs the changing matrices into persistent native `MemorySegment`s owned
+  by its confined Arena and written each frame.
 
 `SceneGeometry` keeps generated vertex/index/texture data away from the application
-flow. `ShaderResources` loads named shader resources and compiles only the Vulkan
-GLSL to SPIR-V with example-scoped Shaderc plumbing.
+flow. Its native allocations use a short-lived Arena because Drakon consumes
+creation data before returning. `ShaderResources` loads named shader resources and
+compiles only the Vulkan GLSL to SPIR-V with example-scoped Shaderc plumbing.
+`ByteBuffer` views appear only at Shaderc/GLFW calls whose LWJGL bindings require
+NIO buffers.
 
 Shader source lives under:
 
