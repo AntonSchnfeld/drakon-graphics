@@ -28,6 +28,7 @@
         <module>backends/drakon-graphics-opengl</module>
         <module>backends/drakon-graphics-vulkan</module>
         <module>spike</module>
+        <module>examples/drakon-graphics-reference</module>
     </modules>
 
 </project>
