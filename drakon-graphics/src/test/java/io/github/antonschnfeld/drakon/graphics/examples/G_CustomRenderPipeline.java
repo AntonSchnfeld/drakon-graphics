@@ -16,8 +16,7 @@ import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 import io.github.antonschnfeld.drakon.graphics.shader.*;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.lang.foreign.MemorySegment;
 import java.util.*;
 
 public final class G_CustomRenderPipeline {
@@ -33,10 +32,10 @@ public final class G_CustomRenderPipeline {
         try (GraphicsDevice device = backend.createDevice(GraphicsDeviceConfig.debug())) {
             Buffer triangle = device.createBuffer(
                     new BufferDescriptor(3L * 2 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                    ByteBuffer.allocateDirect(3 * 2 * Float.BYTES));
+                    MemorySegment.ofArray(new byte[3 * 2 * Float.BYTES]));
             Buffer quad = device.createBuffer(
                     new BufferDescriptor(6L * 2 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                    ByteBuffer.allocateDirect(6 * 2 * Float.BYTES));
+                    MemorySegment.ofArray(new byte[6 * 2 * Float.BYTES]));
 
             VertexLayout layout = VertexLayout.builder()
                     .binding(0, 2 * Float.BYTES, VertexInputRate.PER_VERTEX)
@@ -105,9 +104,8 @@ public final class G_CustomRenderPipeline {
             code = new GlslShaderCode("#version 450 core\nvoid main() {} // " + label);
         } else if (device.shaderTarget() instanceof VulkanShaderTarget) {
             // The probe validates representation routing, not SPIR-V semantics.
-            ByteBuffer words = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
-            words.putInt(0x07230203).flip(); // SPIR-V magic word
-            code = new SpirvShaderCode(words);
+            code = new SpirvShaderCode(MemorySegment.ofArray(
+                    new byte[] {0x03, 0x02, 0x23, 0x07})); // SPIR-V magic word
         } else {
             throw new IllegalStateException("Unsupported probe shader target: " + device.shaderTarget());
         }

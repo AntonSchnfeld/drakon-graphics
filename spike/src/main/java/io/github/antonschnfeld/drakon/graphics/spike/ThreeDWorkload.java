@@ -42,8 +42,8 @@ import io.github.antonschnfeld.drakon.graphics.shader.ShaderCode;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
 import io.github.antonschnfeld.drakon.graphics.shader.SpirvShaderCode;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -240,8 +240,11 @@ final class ThreeDWorkload implements AutoCloseable {
     private GraphicsState presentState;
     private GraphicsState overlayState;
     private TextureFormat presentationFormat;
-    private final ByteBuffer cameraData = ByteBuffer.allocate(16 * Float.BYTES).order(ByteOrder.nativeOrder());
-    private final ByteBuffer instanceData = ByteBuffer.allocate(INSTANCE_BUFFER_BYTES).order(ByteOrder.nativeOrder());
+    private final Arena dataArena = Arena.ofConfined();
+    private final MemorySegment cameraData = dataArena.allocate(16 * Float.BYTES, Float.BYTES);
+    private final MemorySegment instanceData = dataArena.allocate(INSTANCE_BUFFER_BYTES, Float.BYTES);
+    private final SegmentWriter cameraWriter = new SegmentWriter(cameraData);
+    private final SegmentWriter instanceWriter = new SegmentWriter(instanceData);
     private final long animationStartNanos = System.nanoTime();
     private boolean initialized;
     private int presentationStateRebuilds;
@@ -343,29 +346,29 @@ final class ThreeDWorkload implements AutoCloseable {
         renderer = new Renderer(device);
         cubeVertexBuffer = device.createBuffer(
                 new BufferDescriptor(24L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                cubeVertices());
+                cubeVertices(dataArena));
         cubeIndexBuffer = device.createBuffer(
                 new BufferDescriptor(CUBE_INDEX_COUNT * (long) Short.BYTES, Set.of(BufferUsage.INDEX)),
-                cubeIndices());
+                cubeIndices(dataArena));
         instanceBuffer = device.createBuffer(
                 new BufferDescriptor(INSTANCE_BUFFER_BYTES, Set.of(BufferUsage.VERTEX)));
         panelVertexBuffer = device.createBuffer(
                 new BufferDescriptor(4L * 5 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                panelVertices());
+                panelVertices(dataArena));
         panelIndexBuffer = device.createBuffer(
                 new BufferDescriptor(PANEL_INDEX_COUNT * (long) Short.BYTES, Set.of(BufferUsage.INDEX)),
-                panelIndices());
+                panelIndices(dataArena));
         transparentInstanceBuffer = device.createBuffer(
                 new BufferDescriptor(TRANSPARENT_INSTANCE_BUFFER_BYTES, Set.of(BufferUsage.VERTEX)),
-                transparentInstances());
+                transparentInstances(dataArena));
         cameraBuffer = device.createBuffer(
                 new BufferDescriptor(16L * Float.BYTES, Set.of(BufferUsage.UNIFORM)));
         presentVertexBuffer = device.createBuffer(
                 new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                presentVertices());
+                presentVertices(dataArena));
         presentIndexBuffer = device.createBuffer(
                 new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)),
-                presentIndices());
+                presentIndices(dataArena));
         offscreenColor = device.createTexture(new TextureDescriptor(
                 OFFSCREEN_WIDTH,
                 OFFSCREEN_HEIGHT,
@@ -787,11 +790,10 @@ final class ThreeDWorkload implements AutoCloseable {
                 0.1f,
                 100.0f);
         float[] viewProjection = ThreeDMath.multiply(projection, view);
-        cameraData.clear();
-        ThreeDMath.put(cameraData, viewProjection);
-        cameraData.flip();
+        cameraWriter.rewind();
+        ThreeDMath.put(cameraWriter, viewProjection);
 
-        instanceData.clear();
+        instanceWriter.rewind();
         putInstance(
                 ThreeDMath.multiply(
                         ThreeDMath.translation(0, -0.05f, 0.55f),
@@ -813,16 +815,14 @@ final class ThreeDWorkload implements AutoCloseable {
                                 ThreeDMath.rotationY(time * 0.70f),
                                 ThreeDMath.rotationX(-time * 0.25f))),
                 0.20f, 0.92f, 0.38f, 1.0f);
-        instanceData.flip();
     }
 
     private void putInstance(float[] model, float red, float green, float blue, float alpha) {
-        ThreeDMath.put(instanceData, model);
-        instanceData.putFloat(red).putFloat(green).putFloat(blue).putFloat(alpha);
+        putInstance(instanceWriter, model, red, green, blue, alpha);
     }
 
-    private static ByteBuffer cubeVertices() {
-        ByteBuffer vertices = ByteBuffer.allocate(24 * 5 * Float.BYTES).order(ByteOrder.nativeOrder());
+    private static MemorySegment cubeVertices(Arena arena) {
+        SegmentWriter vertices = new SegmentWriter(arena.allocate(24 * 5 * Float.BYTES, Float.BYTES));
         putFace(vertices,
                 -0.7f, -0.7f, 0.7f, 0.7f, -0.7f, 0.7f,
                 0.7f, 0.7f, 0.7f, -0.7f, 0.7f, 0.7f);
@@ -841,10 +841,10 @@ final class ThreeDWorkload implements AutoCloseable {
         putFace(vertices,
                 -0.7f, -0.7f, -0.7f, 0.7f, -0.7f, -0.7f,
                 0.7f, -0.7f, 0.7f, -0.7f, -0.7f, 0.7f);
-        return vertices.flip();
+        return vertices.writtenSegment();
     }
 
-    private static void putFace(ByteBuffer vertices, float... positions) {
+    private static void putFace(SegmentWriter vertices, float... positions) {
         for (int vertex = 0; vertex < 4; vertex++) {
             int position = vertex * 3;
             vertices.putFloat(positions[position]);
@@ -855,36 +855,38 @@ final class ThreeDWorkload implements AutoCloseable {
         }
     }
 
-    private static ByteBuffer cubeIndices() {
-        ByteBuffer indices = ByteBuffer.allocate(CUBE_INDEX_COUNT * Short.BYTES)
-                .order(ByteOrder.nativeOrder());
+    private static MemorySegment cubeIndices(Arena arena) {
+        SegmentWriter indices = new SegmentWriter(
+                arena.allocate(CUBE_INDEX_COUNT * Short.BYTES, Short.BYTES));
         for (int face = 0; face < 6; face++) {
             int start = face * 4;
             indices.putShort((short) start).putShort((short) (start + 1)).putShort((short) (start + 2));
             indices.putShort((short) (start + 2)).putShort((short) (start + 3)).putShort((short) start);
         }
-        return indices.flip();
+        return indices.writtenSegment();
     }
 
-    private static ByteBuffer panelVertices() {
-        return ByteBuffer.allocate(4 * 5 * Float.BYTES).order(ByteOrder.nativeOrder())
+    private static MemorySegment panelVertices(Arena arena) {
+        SegmentWriter vertices = new SegmentWriter(arena.allocate(4 * 5 * Float.BYTES, Float.BYTES));
+        return vertices
                 .putFloat(-1).putFloat(-1).putFloat(0).putFloat(0).putFloat(0)
                 .putFloat(1).putFloat(-1).putFloat(0).putFloat(1).putFloat(0)
                 .putFloat(1).putFloat(1).putFloat(0).putFloat(1).putFloat(1)
                 .putFloat(-1).putFloat(1).putFloat(0).putFloat(0).putFloat(1)
-                .flip();
+                .writtenSegment();
     }
 
-    private static ByteBuffer panelIndices() {
-        return ByteBuffer.allocate(PANEL_INDEX_COUNT * Short.BYTES).order(ByteOrder.nativeOrder())
+    private static MemorySegment panelIndices(Arena arena) {
+        SegmentWriter indices = new SegmentWriter(arena.allocate(PANEL_INDEX_COUNT * Short.BYTES, Short.BYTES));
+        return indices
                 .putShort((short) 0).putShort((short) 1).putShort((short) 2)
                 .putShort((short) 2).putShort((short) 3).putShort((short) 0)
-                .flip();
+                .writtenSegment();
     }
 
-    private static ByteBuffer transparentInstances() {
-        ByteBuffer instances = ByteBuffer.allocate(TRANSPARENT_INSTANCE_BUFFER_BYTES)
-                .order(ByteOrder.nativeOrder());
+    private static MemorySegment transparentInstances(Arena arena) {
+        SegmentWriter instances = new SegmentWriter(
+                arena.allocate(TRANSPARENT_INSTANCE_BUFFER_BYTES, Float.BYTES));
         // Deliberately non-premultiplied RGB: far orange, then near cyan.
         putInstance(instances, transform(-0.35f, 0.10f, -1.75f, 1.65f, 1.05f),
                 1.0f, 0.22f, 0.05f, 0.45f);
@@ -894,7 +896,7 @@ final class ThreeDWorkload implements AutoCloseable {
                 1.0f, 0.0f, 1.0f, 0.0f);
         putInstance(instances, transform(-1.75f, 1.30f, 1.45f, 0.16f, 0.16f),
                 1.0f, 0.95f, 0.10f, 1.0f);
-        return instances.flip();
+        return instances.writtenSegment();
     }
 
     private static float[] transform(float x, float y, float z, float scaleX, float scaleY) {
@@ -905,7 +907,7 @@ final class ThreeDWorkload implements AutoCloseable {
     }
 
     private static void putInstance(
-            ByteBuffer destination,
+            SegmentWriter destination,
             float[] model,
             float red,
             float green,
@@ -915,20 +917,22 @@ final class ThreeDWorkload implements AutoCloseable {
         destination.putFloat(red).putFloat(green).putFloat(blue).putFloat(alpha);
     }
 
-    private static ByteBuffer presentVertices() {
-        return ByteBuffer.allocate(4 * 4 * Float.BYTES).order(ByteOrder.nativeOrder())
+    private static MemorySegment presentVertices(Arena arena) {
+        SegmentWriter vertices = new SegmentWriter(arena.allocate(4 * 4 * Float.BYTES, Float.BYTES));
+        return vertices
                 .putFloat(-1).putFloat(1).putFloat(0).putFloat(0)
                 .putFloat(-1).putFloat(-1).putFloat(0).putFloat(1)
                 .putFloat(1).putFloat(-1).putFloat(1).putFloat(1)
                 .putFloat(1).putFloat(1).putFloat(1).putFloat(0)
-                .flip();
+                .writtenSegment();
     }
 
-    private static ByteBuffer presentIndices() {
-        return ByteBuffer.allocate(6 * Short.BYTES).order(ByteOrder.nativeOrder())
+    private static MemorySegment presentIndices(Arena arena) {
+        SegmentWriter indices = new SegmentWriter(arena.allocate(6 * Short.BYTES, Short.BYTES));
+        return indices
                 .putShort((short) 0).putShort((short) 1).putShort((short) 2)
                 .putShort((short) 2).putShort((short) 3).putShort((short) 0)
-                .flip();
+                .writtenSegment();
     }
 
     private static double elapsedSeconds(long startNanos) {
@@ -960,5 +964,6 @@ final class ThreeDWorkload implements AutoCloseable {
         instanceBuffer.close();
         cubeIndexBuffer.close();
         cubeVertexBuffer.close();
+        dataArena.close();
     }
 }

@@ -10,7 +10,7 @@ import io.github.antonschnfeld.drakon.graphics.command.CommandList;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderTarget;
 
-import java.nio.ByteBuffer;
+import java.lang.foreign.MemorySegment;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -71,20 +71,14 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         return buffer;
     }
 
-    @Override public Buffer createBuffer(BufferDescriptor descriptor, ByteBuffer initialData) {
+    @Override public Buffer createBuffer(BufferDescriptor descriptor, MemorySegment initialData) {
         ensureOpen();
         Objects.requireNonNull(descriptor, "descriptor");
         Objects.requireNonNull(initialData, "initialData");
-        if (initialData.remaining() > descriptor.size()) {
+        if (initialData.byteSize() > descriptor.size()) {
             throw new IllegalArgumentException("initial data exceeds buffer size");
         }
-        int position = initialData.position();
-        int limit = initialData.limit();
-        Buffer buffer = createBuffer(descriptor);
-        if (initialData.position() != position || initialData.limit() != limit) {
-            throw new AssertionError("probe unexpectedly modified ByteBuffer state");
-        }
-        return buffer;
+        return createBuffer(descriptor);
     }
 
     @Override public Texture createTexture(TextureDescriptor descriptor) {
@@ -95,7 +89,8 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
         return texture;
     }
 
-    @Override public Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+    @Override public Texture createTexture(
+            TextureDescriptor descriptor, MemorySegment initialData, ResourceState initialState) {
         ensureOpen();
         Objects.requireNonNull(descriptor, "descriptor");
         Objects.requireNonNull(initialData, "initialData");
@@ -104,17 +99,12 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
             throw new IllegalArgumentException("CPU initialization of depth textures is not supported");
         }
         long required = textureByteCount(descriptor);
-        if (initialData.remaining() != required) {
+        if (initialData.byteSize() != required) {
             throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
         }
         validateTextureStateUsage(descriptor, initialState);
-        int position = initialData.position();
-        int limit = initialData.limit();
         ProbeResources.ProbeTexture texture = own(new ProbeResources.ProbeTexture(this, id(), descriptor));
         textureStates.put(texture, initialState);
-        if (initialData.position() != position || initialData.limit() != limit) {
-            throw new AssertionError("probe unexpectedly modified ByteBuffer state");
-        }
         return texture;
     }
 

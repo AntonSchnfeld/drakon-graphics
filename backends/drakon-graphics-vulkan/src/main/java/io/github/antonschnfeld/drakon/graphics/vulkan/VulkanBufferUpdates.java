@@ -6,11 +6,11 @@ final class VulkanBufferUpdates {
 
     private VulkanBufferUpdates() {}
 
-    static void validateRange(long bufferSize, long offset, int byteCount) {
+    static void validateRange(long bufferSize, long offset, long byteCount) {
         if (offset < 0) throw new IllegalArgumentException("buffer write offset must be non-negative");
         if (byteCount == 0) throw new IllegalArgumentException("buffer write must not be empty");
         if ((offset & 3L) != 0L) throw new IllegalArgumentException("buffer write offset must be four-byte aligned");
-        if ((byteCount & 3) != 0) throw new IllegalArgumentException("buffer write size must be four-byte aligned");
+        if ((byteCount & 3L) != 0L) throw new IllegalArgumentException("buffer write size must be four-byte aligned");
         if (offset > bufferSize - byteCount) throw new IllegalArgumentException("buffer write exceeds destination bounds");
     }
 

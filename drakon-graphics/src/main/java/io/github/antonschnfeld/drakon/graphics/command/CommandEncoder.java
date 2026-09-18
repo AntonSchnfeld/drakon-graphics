@@ -8,7 +8,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.IndexType;
 import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
 import io.github.antonschnfeld.drakon.graphics.resource.Texture;
 
-import java.nio.ByteBuffer;
+import java.lang.foreign.MemorySegment;
 
 /**
  * Records backend-agnostic GPU commands into one command list.
@@ -150,14 +150,14 @@ public interface CommandEncoder extends AutoCloseable {
     /**
      * Records an ordered write of CPU data into an existing GPU buffer.
      *
-     * <p>The bytes selected by {@code data.position()} (inclusive) through
-     * {@code data.limit()} (exclusive) are copied to {@code buffer} beginning at
-     * {@code offset}. This method does not change the source buffer's position or
-     * limit. The selected bytes are captured before this method returns, so the
-     * caller may immediately modify, clear, reuse, or discard the source buffer.</p>
+     * <p>The complete segment is copied to {@code buffer} beginning at
+     * {@code offset}. To write from part of a larger allocation, pass a segment
+     * {@linkplain MemorySegment#asSlice(long, long) slice}. The bytes are captured
+     * before this method returns, so the caller may immediately modify the source
+     * or close its backing arena.</p>
      *
-     * <p>The destination offset and selected byte count must both be multiples of
-     * four, the selected range must be non-empty, and the destination range must
+     * <p>The destination offset and segment byte count must both be multiples of
+     * four, the segment must be non-empty, and the destination range must
      * fit completely within {@code buffer}. The destination must belong to this
      * encoder's device, remain open when the write is recorded, and already be in
      * {@link ResourceState#VERTEX_READ}, {@link ResourceState#INDEX_READ}, or
@@ -175,7 +175,7 @@ public interface CommandEncoder extends AutoCloseable {
      *
      * @param buffer destination buffer created by this encoder's device
      * @param offset four-byte-aligned destination byte offset
-     * @param data non-empty, four-byte-sized selected source range
+     * @param data non-empty, four-byte-sized source segment
      * @throws NullPointerException if {@code buffer} or {@code data} is null
      * @throws IllegalArgumentException if ownership, offset, alignment, byte
      *         count, or destination bounds are invalid
@@ -183,7 +183,7 @@ public interface CommandEncoder extends AutoCloseable {
      *         active, the destination is closed, or its effective state is not
      *         one of the permitted buffer read states
      */
-    void writeBuffer(Buffer buffer, long offset, ByteBuffer data);
+    void writeBuffer(Buffer buffer, long offset, MemorySegment data);
 
     /**
      * Declares a texture state transition and the synchronization required to

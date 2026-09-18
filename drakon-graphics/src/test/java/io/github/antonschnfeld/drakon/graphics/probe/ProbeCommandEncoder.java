@@ -7,7 +7,8 @@ import io.github.antonschnfeld.drakon.graphics.command.CommandList;
 import io.github.antonschnfeld.drakon.graphics.command.RenderingInfo;
 
 import java.util.*;
-import java.nio.ByteBuffer;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 
 final class ProbeCommandEncoder implements CommandEncoder {
     private final ProbeGraphicsDevice owner;
@@ -177,12 +178,12 @@ final class ProbeCommandEncoder implements CommandEncoder {
         ops.add(backendName + ": copyTexture " + debugId(source) + " -> " + debugId(destination));
     }
 
-    @Override public void writeBuffer(Buffer buffer, long offset, ByteBuffer data) {
+    @Override public void writeBuffer(Buffer buffer, long offset, MemorySegment data) {
         open();
         outsideRendering("writeBuffer");
         owned(Objects.requireNonNull(buffer, "buffer"));
         Objects.requireNonNull(data, "data");
-        int byteCount = data.remaining();
+        long byteCount = data.byteSize();
         validateWriteRange(buffer.size(), offset, byteCount);
         ResourceState state = bufferStates.getOrDefault(buffer, ResourceState.UNDEFINED);
         if (state != ResourceState.VERTEX_READ
@@ -190,18 +191,17 @@ final class ProbeCommandEncoder implements CommandEncoder {
                 && state != ResourceState.UNIFORM_READ) {
             throw new IllegalStateException("buffer must be in VERTEX_READ, INDEX_READ, or UNIFORM_READ");
         }
-        byte[] snapshot = new byte[byteCount];
-        data.duplicate().get(snapshot);
+        byte[] snapshot = data.toArray(ValueLayout.JAVA_BYTE);
         bufferWrites.add(new ProbeBufferWrite(buffer, offset, snapshot));
         ops.add(backendName + ": writeBuffer " + debugId(buffer) + " offset=" + offset
                 + " size=" + byteCount);
     }
 
-    private static void validateWriteRange(long bufferSize, long offset, int byteCount) {
+    private static void validateWriteRange(long bufferSize, long offset, long byteCount) {
         if (offset < 0) throw new IllegalArgumentException("buffer write offset must be non-negative");
         if (byteCount == 0) throw new IllegalArgumentException("buffer write must not be empty");
         if ((offset & 3L) != 0L) throw new IllegalArgumentException("buffer write offset must be four-byte aligned");
-        if ((byteCount & 3) != 0) throw new IllegalArgumentException("buffer write size must be four-byte aligned");
+        if ((byteCount & 3L) != 0L) throw new IllegalArgumentException("buffer write size must be four-byte aligned");
         if (offset > bufferSize - byteCount) throw new IllegalArgumentException("buffer write exceeds destination bounds");
     }
 

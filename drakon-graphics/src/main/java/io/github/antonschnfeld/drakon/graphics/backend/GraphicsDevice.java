@@ -19,7 +19,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.TextureDescriptor;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderDescriptor;
 import io.github.antonschnfeld.drakon.graphics.shader.ShaderTarget;
 
-import java.nio.ByteBuffer;
+import java.lang.foreign.MemorySegment;
 
 /**
  * Logical GPU device and owner of backend resources created through it.
@@ -56,24 +56,28 @@ public interface GraphicsDevice extends AutoCloseable {
     /**
      * Creates a buffer and initializes its leading bytes from {@code initialData}.
      *
-     * <p>The bytes in {@code initialData} from its current position (inclusive)
-     * to its limit (exclusive) are copied. Implementations must not modify the
-     * buffer's position or limit. The supplied data must fit within the created
-     * buffer.</p>
+     * <p>The segment represents exactly the bytes to consume. Its complete
+     * {@link MemorySegment#byteSize() byte size} must fit within the created
+     * buffer. To initialize from part of a larger allocation, pass a segment
+     * {@linkplain MemorySegment#asSlice(long, long) slice}.</p>
+     *
+     * <p>The bytes are copied before this method returns. The caller may modify
+     * the source or close its backing arena immediately afterward; the device
+     * does not retain the supplied segment.</p>
      *
      * <p>This overload performs creation-time initialization. Ordered updates to
      * an existing buffer during normal rendering are recorded with
-     * {@link CommandEncoder#writeBuffer(Buffer, long, ByteBuffer)}.</p>
+     * {@link CommandEncoder#writeBuffer(Buffer, long, MemorySegment)}.</p>
      *
      * @param descriptor buffer size and intended usages
      * @param initialData initial bytes to copy into the new buffer
      * @return a new initialized buffer owned by this device
      * @throws NullPointerException if either argument is {@code null}
-     * @throws IllegalArgumentException if the remaining data exceeds the buffer
+     * @throws IllegalArgumentException if the segment data exceeds the buffer
      *         size
      * @throws IllegalStateException if this device is closed
      */
-    Buffer createBuffer(BufferDescriptor descriptor, ByteBuffer initialData);
+    Buffer createBuffer(BufferDescriptor descriptor, MemorySegment initialData);
 
     /**
      * Creates an uninitialized texture.
@@ -89,12 +93,17 @@ public interface GraphicsDevice extends AutoCloseable {
      * Creates a texture, initializes all of mip level zero, and returns it in
      * {@code initialState}.
      *
-     * <p>The bytes from {@code initialData}'s current position (inclusive) to
-     * its limit (exclusive) must be the complete, tightly packed contents of
-     * this two-dimensional texture. The required byte count is {@code width *
+     * <p>The segment represents exactly the bytes to consume and must contain
+     * the complete, tightly packed contents of this two-dimensional texture.
+     * The required byte count is {@code width *
      * height * bytes-per-texel(format)}. There is no row padding, mip offset,
-     * or array-layer offset in this creation-time-only operation.
-     * Implementations must not modify the buffer's position or limit.</p>
+     * or array-layer offset in this creation-time-only operation. To initialize
+     * from part of a larger allocation, pass a segment
+     * {@linkplain MemorySegment#asSlice(long, long) slice}.</p>
+     *
+     * <p>The bytes are copied before this method returns. The caller may modify
+     * the source or close its backing arena immediately afterward; the device
+     * does not retain the supplied segment.</p>
      *
      * <p>{@code initialState} is the first portable GPU access state, rather
      * than an implementation upload state. It must be a texture state other
@@ -116,7 +125,10 @@ public interface GraphicsDevice extends AutoCloseable {
      *         a depth format
      * @throws IllegalStateException if this device is closed
      */
-    Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState);
+    Texture createTexture(
+            TextureDescriptor descriptor,
+            MemorySegment initialData,
+            ResourceState initialState);
 
     /**
      * Returns the shader target that code must be prepared for before it is

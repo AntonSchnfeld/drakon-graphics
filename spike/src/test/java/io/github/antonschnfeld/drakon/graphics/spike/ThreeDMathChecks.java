@@ -1,7 +1,8 @@
 package io.github.antonschnfeld.drakon.graphics.spike;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 
 /** Hardware-free checks for the spike-private 3D matrix and instance layout. */
 public final class ThreeDMathChecks {
@@ -25,12 +26,13 @@ public final class ThreeDMathChecks {
         requireNear(translation[13], 3, "translation Y column");
         requireNear(translation[14], 4, "translation Z column");
 
-        ByteBuffer packed = ByteBuffer.allocate(16 * Float.BYTES).order(ByteOrder.nativeOrder());
-        ThreeDMath.put(packed, translation);
-        packed.flip();
-        requireNear(packed.getFloat(12 * Float.BYTES), 2, "packed translation X");
-        requireNear(packed.getFloat(13 * Float.BYTES), 3, "packed translation Y");
-        requireNear(packed.getFloat(14 * Float.BYTES), 4, "packed translation Z");
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment packed = arena.allocate(16 * Float.BYTES, Float.BYTES);
+            ThreeDMath.put(new SegmentWriter(packed), translation);
+            requireNear(packed.getAtIndex(ValueLayout.JAVA_FLOAT, 12), 2, "packed translation X");
+            requireNear(packed.getAtIndex(ValueLayout.JAVA_FLOAT, 13), 3, "packed translation Y");
+            requireNear(packed.getAtIndex(ValueLayout.JAVA_FLOAT, 14), 4, "packed translation Z");
+        }
     }
 
     private static void checkMultiplicationOrder() {

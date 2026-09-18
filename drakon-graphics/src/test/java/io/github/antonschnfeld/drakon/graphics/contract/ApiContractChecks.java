@@ -17,8 +17,9 @@ import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 import io.github.antonschnfeld.drakon.graphics.shader.*;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -88,19 +89,23 @@ public final class ApiContractChecks {
         expect(IllegalArgumentException.class,
                 () -> new ShaderDescriptor(ShaderStage.VERTEX, "   ", new GlslShaderCode("void main() {}")));
         expect(IllegalArgumentException.class,
-                () -> new SpirvShaderCode(ByteBuffer.allocate(3)));
+                () -> new SpirvShaderCode(MemorySegment.ofArray(new byte[3])));
 
-        ByteBuffer input = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
-        input.putInt(0x07230203).putInt(0x00010600).flip();
-        int inputPosition = input.position();
-        SpirvShaderCode code = new SpirvShaderCode(input);
-        if (input.position() != inputPosition) {
-            throw new AssertionError("SpirvShaderCode must not consume the caller's buffer");
+        SpirvShaderCode code;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = arena.allocate(8, Integer.BYTES);
+            input.setAtIndex(ValueLayout.JAVA_INT, 0, 0x07230203);
+            input.setAtIndex(ValueLayout.JAVA_INT, 1, 0x00010600);
+            code = new SpirvShaderCode(input);
+            input.setAtIndex(ValueLayout.JAVA_INT, 0, 0);
         }
-        ByteBuffer firstView = code.code();
-        firstView.getInt();
-        if (code.code().position() != 0 || !code.code().isReadOnly()) {
-            throw new AssertionError("SpirvShaderCode must expose independent read-only views");
+        if (!code.code().isReadOnly()
+                || code.code().getAtIndex(ValueLayout.JAVA_INT, 0) != 0x07230203) {
+            throw new AssertionError("SpirvShaderCode must own an immutable snapshot independent of its caller");
+        }
+        SpirvShaderCode equalCode = new SpirvShaderCode(code.code());
+        if (!code.equals(equalCode) || code.hashCode() != equalCode.hashCode()) {
+            throw new AssertionError("SpirvShaderCode equality must compare snapshot contents");
         }
     }
 
@@ -111,9 +116,8 @@ public final class ApiContractChecks {
              GraphicsDevice second = backend.createDevice(GraphicsDeviceConfig.debug())) {
 
             ShaderCode glsl = new GlslShaderCode("void main() {}");
-            ByteBuffer spirvBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
-            spirvBytes.putInt(0x07230203).flip();
-            ShaderCode spirv = new SpirvShaderCode(spirvBytes);
+            ShaderCode spirv = new SpirvShaderCode(MemorySegment.ofArray(
+                    new byte[] {0x03, 0x02, 0x23, 0x07}));
 
             if (backendId.equals("opengl")) {
                 if (!(first.shaderTarget() instanceof OpenGLShaderTarget)
