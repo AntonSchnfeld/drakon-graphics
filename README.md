@@ -40,6 +40,8 @@ drakon-graphics-build
 ├── backends/
 │   ├── drakon-graphics-opengl
 │   └── drakon-graphics-vulkan
+├── examples/
+│   └── drakon-graphics-reference
 └── spike/
 ```
 
@@ -266,6 +268,29 @@ mvn -f spike/pom.xml exec:java -Dexec.args=vulkan
 ```
 
 The spike owns its window-system integration and is intentionally separate from the production graphics modules.
+
+## Reference application
+
+The non-published [`examples/drakon-graphics-reference`](examples/drakon-graphics-reference)
+module is the consumer-oriented starting point. It renders three moving textured
+objects plus a moving translucent panel into resize-aware RGBA8 and D32 offscreen
+attachments, then applies subtle color grading and a vignette before presenting
+the result through either backend. Its portable
+[`ReferenceRenderer`](examples/drakon-graphics-reference/src/main/java/io/github/antonschnfeld/drakon/graphics/reference/ReferenceRenderer.java)
+uses only the public `drakon-graphics` API; GLFW and backend bootstrap remain in
+separate example classes. Application-side camera and model math uses JOML only in
+the example module, and all GLSL lives in named resource files.
+
+After installing the reactor, run the interactive application with:
+
+```bash
+mvn -f examples/drakon-graphics-reference/pom.xml exec:java -Dexec.args=opengl
+mvn -f examples/drakon-graphics-reference/pom.xml exec:java -Dexec.args=vulkan
+```
+
+Append `finite` to either command to render 240 frames and exit normally.
+See the [reference application README](examples/drakon-graphics-reference/README.md)
+for the code-reading guide, finite-mode commands, and resize/lifecycle details.
 
 ## Project status
 
