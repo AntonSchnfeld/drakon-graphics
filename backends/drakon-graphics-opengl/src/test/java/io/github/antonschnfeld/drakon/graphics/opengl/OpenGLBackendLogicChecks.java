@@ -10,6 +10,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.ResourceState;
 import io.github.antonschnfeld.drakon.graphics.resource.ScissorRect;
 import io.github.antonschnfeld.drakon.graphics.resource.ShaderStage;
 import io.github.antonschnfeld.drakon.graphics.resource.TextureBinding;
+import io.github.antonschnfeld.drakon.graphics.resource.TextureFormat;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexFormat;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexInputRate;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexLayout;
@@ -27,6 +28,8 @@ import static org.lwjgl.opengl.GL43C.GL_DEBUG_SEVERITY_NOTIFICATION;
 import static org.lwjgl.opengl.GL43C.GL_DEBUG_SOURCE_API;
 import static org.lwjgl.opengl.GL43C.GL_DEBUG_TYPE_ERROR;
 import static org.lwjgl.opengl.GL43C.GL_DEBUG_TYPE_PERFORMANCE;
+import static org.lwjgl.opengl.GL11C.GL_UNSIGNED_INT;
+import static org.lwjgl.opengl.GL30C.GL_DEPTH_COMPONENT24;
 
 /** Hardware-free checks for portable validation arithmetic and OpenGL binding plans. */
 public final class OpenGLBackendLogicChecks {
@@ -43,6 +46,7 @@ public final class OpenGLBackendLogicChecks {
         uploadAdaptationPreservesSelectedRanges();
         bufferWriteSnapshotIsIndependent();
         depthClearOverridesDisabledWriteMask();
+        depthFormatsMapExactly();
         nativeDebugMessagesAreFilteredAndFormatted();
         nativeDebugCallbackOwnershipIsExplicit();
         System.out.println("OpenGL backend logic checks passed.");
@@ -240,6 +244,15 @@ public final class OpenGLBackendLogicChecks {
         require(!OpenGLCommandEncoder.depthClearRequiresMaskOverride(
                         DepthAttachmentOps.load(), false),
                 "depth load changed the depth write mask");
+    }
+
+    private static void depthFormatsMapExactly() {
+        require(OpenGLMappings.textureInternalFormat(TextureFormat.D24_UNORM)
+                        == GL_DEPTH_COMPONENT24,
+                "D24_UNORM did not map to GL_DEPTH_COMPONENT24");
+        require(OpenGLMappings.textureExternalType(TextureFormat.D24_UNORM)
+                        == GL_UNSIGNED_INT,
+                "D24_UNORM did not use unsigned-normalized integer upload representation");
     }
 
     private static void assertScissor(

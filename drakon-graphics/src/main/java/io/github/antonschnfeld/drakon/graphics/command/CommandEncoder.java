@@ -23,9 +23,9 @@ import java.lang.foreign.MemorySegment;
  * {@link GraphicsDevice} that created the encoder.
  * Resource-state transitions for application-visible textures and buffers are
  * explicit. {@link #beginRendering(RenderingInfo)} does not silently transition
- * caller-owned attachments. Backend-owned presentation images are the deliberate
- * exception because they are not exposed as resources the application can
- * transition itself.</p>
+ * caller-owned attachments. Backend-owned presentation color and depth images
+ * are the deliberate exception because they are not exposed as resources the
+ * application can transition itself.</p>
  */
 public interface CommandEncoder extends AutoCloseable {
     /**

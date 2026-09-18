@@ -18,9 +18,10 @@ import java.util.Optional;
  * behavior. For caller-owned texture attachments, this object does not perform
  * resource-state transitions; those textures must be transitioned explicitly
  * before {@link CommandEncoder#beginRendering(RenderingInfo)}. Backend-owned
- * presentation attachments are different: because they are not exposed as
- * application textures, their acquire/layout/present transitions are managed by
- * the backend.</p>
+ * presentation attachments are different: backend-owned presentation color and
+ * depth storage is not exposed as application textures, so its native layout
+ * and synchronization are managed internally. Attachment load, store, and clear
+ * behavior still comes from this rendering description.</p>
  *
  * <p>Viewport and scissor values are snapshots. Rebuild an instance that was
  * derived from a full presentation target after that target changes size.</p>

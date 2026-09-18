@@ -5,6 +5,7 @@ import io.github.antonschnfeld.drakon.graphics.command.Color;
 import io.github.antonschnfeld.drakon.graphics.command.ColorAttachmentOps;
 import io.github.antonschnfeld.drakon.graphics.command.CommandEncoder;
 import io.github.antonschnfeld.drakon.graphics.command.CommandList;
+import io.github.antonschnfeld.drakon.graphics.command.DepthAttachmentOps;
 import io.github.antonschnfeld.drakon.graphics.command.RenderingInfo;
 import io.github.antonschnfeld.drakon.graphics.opengl.OpenGLBackend;
 import io.github.antonschnfeld.drakon.graphics.opengl.OpenGLDevice;
@@ -249,6 +250,10 @@ public final class BackendSpikeMain {
                                 throw new AssertionError("OpenGL buffer writes changed external copy-write binding");
                             }
                         }
+                        try (DirectPresentationDepthWorkload direct =
+                                     DirectPresentationDepthWorkload.createOpenGL(device, target)) {
+                            direct.run("OpenGL", window);
+                        }
                         try (ThreeDWorkload workload = ThreeDWorkload.createOpenGL(device, target)) {
                             workload.runPresentationStress("OpenGL", window, false);
                             if (interactive) {
@@ -315,6 +320,10 @@ public final class BackendSpikeMain {
                             runDynamicBufferStress(
                                     device, target, mesh, window::pollEvents, "Vulkan", animationStartNanos);
                         }
+                        try (DirectPresentationDepthWorkload direct =
+                                     DirectPresentationDepthWorkload.createVulkan(device, target)) {
+                            direct.run("Vulkan", window);
+                        }
                         try (ThreeDWorkload workload = ThreeDWorkload.createVulkan(device, target)) {
                             workload.runPresentationStress("Vulkan", window, true);
                             if (interactive) {
@@ -347,6 +356,7 @@ public final class BackendSpikeMain {
                         .fragmentShader(fragment)
                         .bindingLayout(layout)
                         .colorFormat(target.colorFormats().get(0))
+                        .depthFormat(target.depthFormat())
                         .build())) {
             if (ignored == null) throw new AssertionError("inactive OpenGL binding state was not created");
         }
@@ -441,6 +451,7 @@ public final class BackendSpikeMain {
                 .bindingLayout(first)
                 .bindingLayout(shared)
                 .colorFormat(target.colorFormats().get(0))
+                .depthFormat(target.depthFormat())
                 .build());
     }
 
@@ -456,6 +467,7 @@ public final class BackendSpikeMain {
         renderer.execute(RenderPipeline.of(commands -> {
             commands.beginRendering(RenderingInfo.builder(target)
                     .color(ColorAttachmentOps.clear(Color.BLACK))
+                    .depth(DepthAttachmentOps.clear(1.0f))
                     .build());
             commands.setGraphicsState(stateA);
             commands.bindSet(0, setA);
@@ -586,6 +598,7 @@ public final class BackendSpikeMain {
                                 .build())
                         .bindingLayout(bindingLayout)
                         .colorFormat(target.colorFormats().get(0))
+                        .depthFormat(target.depthFormat())
                         .build());
         BindingSet bindingSet = device.createBindingSet(BindingSetDescriptor.builder(bindingLayout)
                 .bind(textureBinding, new TextureBinding(texture, sampler))
@@ -632,6 +645,7 @@ public final class BackendSpikeMain {
                                 .build())
                         .bindingLayout(bindingLayout)
                         .colorFormat(target.colorFormats().get(0))
+                        .depthFormat(target.depthFormat())
                         .build());
         BindingSet bindingSet = device.createBindingSet(BindingSetDescriptor.builder(bindingLayout)
                 .bind(textureBinding, new TextureBinding(texture, sampler))
@@ -685,6 +699,7 @@ public final class BackendSpikeMain {
             // change extent after a resize while retaining the same Java object.
             commands.beginRendering(RenderingInfo.builder(target)
                     .color(ColorAttachmentOps.clear(new Color(0.03f, 0.04f, 0.06f, 1.0f)))
+                    .depth(DepthAttachmentOps.clear(1.0f))
                     .build());
             commands.setGraphicsState(mesh.state());
             commands.setVertexBuffer(0, mesh.vertexBuffer(), 0);
@@ -745,6 +760,7 @@ public final class BackendSpikeMain {
             renderer.execute(RenderPipeline.of(commands -> {
                 commands.beginRendering(RenderingInfo.builder(target)
                         .color(ColorAttachmentOps.clear(new Color(0.02f, 0.02f, 0.02f, 1.0f)))
+                        .depth(DepthAttachmentOps.clear(1.0f))
                         .build());
                 commands.setGraphicsState(transientMesh.state());
                 commands.setVertexBuffer(0, transientMesh.vertexBuffer(), 0);

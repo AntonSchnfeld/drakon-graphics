@@ -248,7 +248,7 @@ public final class OpenGLDevice implements GraphicsDevice {
         long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
         int bytesPerTexel = switch (descriptor.format()) {
             case RGBA8_UNORM, BGRA8_UNORM -> 4;
-            case D32_FLOAT -> 4;
+            case D24_UNORM, D32_FLOAT -> 4;
         };
         return Math.multiplyExact(texels, bytesPerTexel);
     }

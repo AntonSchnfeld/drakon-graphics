@@ -12,6 +12,7 @@ final class VulkanMappings {
         return switch (format) {
             case RGBA8_UNORM -> VK_FORMAT_R8G8B8A8_UNORM;
             case BGRA8_UNORM -> VK_FORMAT_B8G8R8A8_UNORM;
+            case D24_UNORM -> VK_FORMAT_X8_D24_UNORM_PACK32;
             case D32_FLOAT -> VK_FORMAT_D32_SFLOAT;
         };
     }

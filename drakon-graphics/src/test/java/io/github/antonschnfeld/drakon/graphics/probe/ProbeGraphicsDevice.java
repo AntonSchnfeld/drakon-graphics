@@ -119,7 +119,7 @@ final class ProbeGraphicsDevice implements GraphicsDevice {
     private static long textureByteCount(TextureDescriptor descriptor) {
         long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
         int bytesPerTexel = switch (descriptor.format()) {
-            case RGBA8_UNORM, BGRA8_UNORM, D32_FLOAT -> 4;
+            case RGBA8_UNORM, BGRA8_UNORM, D24_UNORM, D32_FLOAT -> 4;
         };
         return Math.multiplyExact(texels, bytesPerTexel);
     }

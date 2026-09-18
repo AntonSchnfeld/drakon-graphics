@@ -7,16 +7,20 @@ import io.github.antonschnfeld.drakon.graphics.resource.TextureFormat;
 import java.util.List;
 
 import static org.lwjgl.glfw.GLFW.glfwSwapBuffers;
+import static org.lwjgl.opengl.GL11C.glGetInteger;
+import static org.lwjgl.opengl.GL30C.*;
 
 /** Spike integration of an externally owned GLFW context with framebuffer zero. */
 final class GlfwOpenGLRenderTarget implements OpenGLRenderTargetAccess {
     private final OpenGLDevice device;
     private final GlfwWindow window;
+    private final TextureFormat depthFormat;
     private boolean closed;
 
     GlfwOpenGLRenderTarget(OpenGLDevice device, GlfwWindow window) {
         this.device = device;
         this.window = window;
+        depthFormat = verifyDefaultFramebufferDepth();
     }
 
     @Override public OpenGLDevice device() { return device; }
@@ -24,7 +28,7 @@ final class GlfwOpenGLRenderTarget implements OpenGLRenderTargetAccess {
     @Override public int width() { requireOpen(); return window.framebufferWidth(); }
     @Override public int height() { requireOpen(); return window.framebufferHeight(); }
     @Override public List<TextureFormat> colorFormats() { requireOpen(); return List.of(TextureFormat.RGBA8_UNORM); }
-    @Override public TextureFormat depthFormat() { requireOpen(); return null; }
+    @Override public TextureFormat depthFormat() { requireOpen(); return depthFormat; }
 
     @Override
     public void present() {
@@ -34,6 +38,26 @@ final class GlfwOpenGLRenderTarget implements OpenGLRenderTargetAccess {
 
     private void requireOpen() {
         if (closed) throw new IllegalStateException("OpenGL presentation target is closed");
+    }
+
+    private static TextureFormat verifyDefaultFramebufferDepth() {
+        int previous = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        try {
+            int bits = glGetFramebufferAttachmentParameteri(
+                    GL_DRAW_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE);
+            int componentType = glGetFramebufferAttachmentParameteri(
+                    GL_DRAW_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE);
+            if (bits != 24 || componentType != GL_UNSIGNED_NORMALIZED) {
+                throw new IllegalStateException(
+                        "GLFW default framebuffer depth is not D24_UNORM: depthSize="
+                                + bits + ", componentType=0x"
+                                + Integer.toHexString(componentType));
+            }
+            return TextureFormat.D24_UNORM;
+        } finally {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previous);
+        }
     }
 
     /** Releases only this target facade; the spike window remains externally owned. */

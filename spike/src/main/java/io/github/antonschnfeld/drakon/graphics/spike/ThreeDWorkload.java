@@ -240,6 +240,7 @@ final class ThreeDWorkload implements AutoCloseable {
     private GraphicsState presentState;
     private GraphicsState overlayState;
     private TextureFormat presentationFormat;
+    private TextureFormat presentationDepthFormat;
     private final Arena dataArena = Arena.ofConfined();
     private final MemorySegment cameraData = dataArena.allocate(16 * Float.BYTES, Float.BYTES);
     private final MemorySegment instanceData = dataArena.allocate(INSTANCE_BUFFER_BYTES, Float.BYTES);
@@ -442,6 +443,7 @@ final class ThreeDWorkload implements AutoCloseable {
                 .depthFormat(TextureFormat.D32_FLOAT)
                 .build());
         presentationFormat = presentationTarget.colorFormats().get(0);
+        presentationDepthFormat = presentationTarget.depthFormat();
         presentState = device.createGraphicsState(GraphicsStateDescriptor.builder()
                 .vertexShader(presentVertexShader)
                 .fragmentShader(presentFragmentShader)
@@ -453,6 +455,7 @@ final class ThreeDWorkload implements AutoCloseable {
                 .bindingLayout(presentLayout)
                 .raster(new RasterState(CullMode.NONE))
                 .colorFormat(presentationFormat)
+                .depthFormat(presentationDepthFormat)
                 .build());
         overlayState = device.createGraphicsState(GraphicsStateDescriptor.builder()
                 .vertexShader(overlayVertexShader)
@@ -460,6 +463,7 @@ final class ThreeDWorkload implements AutoCloseable {
                 .blend(BlendState.alphaBlend())
                 .raster(new RasterState(CullMode.NONE))
                 .colorFormat(presentationFormat)
+                .depthFormat(presentationDepthFormat)
                 .build());
     }
 
@@ -708,6 +712,7 @@ final class ThreeDWorkload implements AutoCloseable {
                     ResourceState.SAMPLED_READ);
             commands.beginRendering(RenderingInfo.builder(presentationTarget)
                     .color(ColorAttachmentOps.clear(Color.BLACK))
+                    .depth(DepthAttachmentOps.clear(1.0f))
                     .build());
             ensurePresentationStatesCompatible();
             commands.setGraphicsState(presentState);
@@ -725,6 +730,7 @@ final class ThreeDWorkload implements AutoCloseable {
             renderer.execute(RenderPipeline.of(commands -> {
                 commands.beginRendering(RenderingInfo.builder(presentationTarget)
                         .color(ColorAttachmentOps.load())
+                        .depth(DepthAttachmentOps.load())
                         .build());
                 ensurePresentationStatesCompatible();
                 commands.setGraphicsState(overlayState);
@@ -737,7 +743,9 @@ final class ThreeDWorkload implements AutoCloseable {
 
     private void ensurePresentationStatesCompatible() {
         TextureFormat currentFormat = presentationTarget.colorFormats().get(0);
-        if (currentFormat == presentationFormat) return;
+        TextureFormat currentDepthFormat = presentationTarget.depthFormat();
+        if (currentFormat == presentationFormat
+                && currentDepthFormat == presentationDepthFormat) return;
 
         GraphicsState nextPresent = device.createGraphicsState(GraphicsStateDescriptor.builder()
                 .vertexShader(presentVertexShader)
@@ -750,6 +758,7 @@ final class ThreeDWorkload implements AutoCloseable {
                 .bindingLayout(presentLayout)
                 .raster(new RasterState(CullMode.NONE))
                 .colorFormat(currentFormat)
+                .depthFormat(currentDepthFormat)
                 .build());
         GraphicsState nextOverlay;
         try {
@@ -759,6 +768,7 @@ final class ThreeDWorkload implements AutoCloseable {
                     .blend(BlendState.alphaBlend())
                     .raster(new RasterState(CullMode.NONE))
                     .colorFormat(currentFormat)
+                    .depthFormat(currentDepthFormat)
                     .build());
         } catch (RuntimeException | Error failure) {
             nextPresent.close();
@@ -770,6 +780,7 @@ final class ThreeDWorkload implements AutoCloseable {
         presentState = nextPresent;
         overlayState = nextOverlay;
         presentationFormat = currentFormat;
+        presentationDepthFormat = currentDepthFormat;
         presentationStateRebuilds++;
         previousOverlay.close();
         previousPresent.close();
