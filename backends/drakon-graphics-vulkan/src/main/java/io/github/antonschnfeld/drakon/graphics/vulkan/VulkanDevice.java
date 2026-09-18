@@ -470,7 +470,7 @@ public final class VulkanDevice implements GraphicsDevice {
 
     long presentationColorView(VulkanPresentationTarget target, int index) {
         requireOpen();
-        target.requireAlive();
+        target.requireOperational();
         if (!target.imageAcquired) throw new IllegalStateException("no swapchain image is currently acquired");
         if (index != 0) throw new IndexOutOfBoundsException("presentation target has one color attachment");
         return target.swapchainViews[target.imageIndex];
@@ -487,13 +487,14 @@ public final class VulkanDevice implements GraphicsDevice {
             VulkanPresentationTarget target,
             VulkanPresentationState recordingState) {
         requireOpen();
-        target.requireAlive();
+        target.requireOperational();
         if (!ensurePresentationAcquired(target)) return null;
         VulkanPresentationState state = recordingState;
         if (state == null) {
             state = new VulkanPresentationState(
                     target, target.currentAcquisition, target.imageIndex,
-                    target.swapchainInitialized[target.imageIndex]);
+                    target.swapchainInitialized[target.imageIndex],
+                    target.presentationDepthInitialized[target.imageIndex]);
         } else if (state.target != target
                 || state.acquisition != target.currentAcquisition
                 || state.imageIndex != target.imageIndex) {
@@ -505,8 +506,13 @@ public final class VulkanDevice implements GraphicsDevice {
             long srcStage = state.recordingInitialized()
                     ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
             long srcAccess = 0L;
-            VkImageMemoryBarrier2.Buffer barrier = VulkanFfm.structBuffer(arena, VkImageMemoryBarrier2.SIZEOF, VkImageMemoryBarrier2.ALIGNOF, 1, VkImageMemoryBarrier2::create);
-            barrier.get(0)
+            VkImageMemoryBarrier2.Buffer barriers = VulkanFfm.structBuffer(
+                    arena,
+                    VkImageMemoryBarrier2.SIZEOF,
+                    VkImageMemoryBarrier2.ALIGNOF,
+                    2,
+                    VkImageMemoryBarrier2::create);
+            barriers.get(0)
                     .sType$Default()
                     .srcStageMask(srcStage)
                     .srcAccessMask(srcAccess)
@@ -519,9 +525,34 @@ public final class VulkanDevice implements GraphicsDevice {
                     .image(target.swapchainImages[target.imageIndex])
                     .subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
                             .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
+            boolean depthInitialized = state.recordingDepthInitialized();
+            barriers.get(1)
+                    .sType$Default()
+                    .srcStageMask(depthInitialized
+                            ? VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                                    | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
+                            : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)
+                    .srcAccessMask(depthInitialized
+                            ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                                    | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                            : 0L)
+                    .dstStageMask(VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                            | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT)
+                    .dstAccessMask(VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                            | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+                    .oldLayout(depthInitialized
+                            ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                            : VK_IMAGE_LAYOUT_UNDEFINED)
+                    .newLayout(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)
+                    .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .image(target.presentationDepths[target.imageIndex].image)
+                    .subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT)
+                            .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
             VkDependencyInfo dependency = VulkanFfm.struct(arena, VkDependencyInfo.SIZEOF, VkDependencyInfo.ALIGNOF, VkDependencyInfo::create)
-                    .sType$Default().pImageMemoryBarriers(barrier);
+                    .sType$Default().pImageMemoryBarriers(barriers);
             vkCmdPipelineBarrier2(commandBuffer, dependency);
+            state.markDepthInitialized();
         }
         return state;
     }
@@ -531,7 +562,7 @@ public final class VulkanDevice implements GraphicsDevice {
             VkCommandBuffer commandBuffer,
             VulkanPresentationState state) {
         requireOpen();
-        target.requireAlive();
+        target.requireOperational();
         if (!target.imageAcquired) throw new IllegalStateException("no swapchain image is acquired");
         if (state == null
                 || state.target != target
@@ -660,9 +691,21 @@ public final class VulkanDevice implements GraphicsDevice {
             check(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, target.surface, formatCount, formats),
                     "vkGetPhysicalDeviceSurfaceFormatsKHR");
             VkSurfaceFormatKHR chosen = chooseSurfaceFormat(formats);
+            TextureFormat newColorFormat = switch (chosen.format()) {
+                case VK_FORMAT_B8G8R8A8_UNORM -> TextureFormat.BGRA8_UNORM;
+                case VK_FORMAT_R8G8B8A8_UNORM -> TextureFormat.RGBA8_UNORM;
+                default -> throw new IllegalStateException(
+                        "chosen swapchain format lacks portable TextureFormat mapping");
+            };
 
             int width = extent.width();
             int height = extent.height();
+            int depthUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            requireImageFormatSupport(
+                    TextureFormat.D32_FLOAT,
+                    VulkanMappings.format(TextureFormat.D32_FLOAT),
+                    depthUsage,
+                    arena);
 
             int imageCount = capabilities.minImageCount() + 1;
             if (capabilities.maxImageCount() > 0) imageCount = Math.min(imageCount, capabilities.maxImageCount());
@@ -685,41 +728,137 @@ public final class VulkanDevice implements GraphicsDevice {
             LongBuffer pSwapchain = VulkanFfm.longs(arena, 1);
             check(vkCreateSwapchainKHR(device, info, null, pSwapchain), "vkCreateSwapchainKHR");
             long newSwapchain = pSwapchain.get(0);
+            long[] newImages = new long[0];
+            long[] newViews = new long[0];
+            VulkanPresentationDepth[] newDepths = new VulkanPresentationDepth[0];
+            try {
+                IntBuffer imageCountOut = VulkanFfm.ints(arena, 1);
+                check(vkGetSwapchainImagesKHR(device, newSwapchain, imageCountOut, null),
+                        "vkGetSwapchainImagesKHR(count)");
+                LongBuffer images = VulkanFfm.longs(arena, imageCountOut.get(0));
+                check(vkGetSwapchainImagesKHR(device, newSwapchain, imageCountOut, images),
+                        "vkGetSwapchainImagesKHR");
+                newImages = new long[imageCountOut.get(0)];
+                newViews = new long[imageCountOut.get(0)];
+                newDepths = new VulkanPresentationDepth[imageCountOut.get(0)];
+                for (int i = 0; i < newImages.length; i++) {
+                    newImages[i] = images.get(i);
+                    VkImageViewCreateInfo viewInfo = VulkanFfm.struct(
+                            arena,
+                            VkImageViewCreateInfo.SIZEOF,
+                            VkImageViewCreateInfo.ALIGNOF,
+                            VkImageViewCreateInfo::create)
+                            .sType$Default()
+                            .image(newImages[i])
+                            .viewType(VK_IMAGE_VIEW_TYPE_2D)
+                            .format(chosen.format())
+                            .subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                                    .baseMipLevel(0).levelCount(1)
+                                    .baseArrayLayer(0).layerCount(1));
+                    LongBuffer pView = VulkanFfm.longs(arena, 1);
+                    check(vkCreateImageView(device, viewInfo, null, pView),
+                            "vkCreateImageView(swapchain)");
+                    newViews[i] = pView.get(0);
+                    newDepths[i] = createPresentationDepth(width, height, arena);
+                }
+                VulkanPresentationTarget.validateDepthStorage(newImages, newDepths);
 
-            IntBuffer imageCountOut = VulkanFfm.ints(arena, 1);
-            check(vkGetSwapchainImagesKHR(device, newSwapchain, imageCountOut, null), "vkGetSwapchainImagesKHR(count)");
-            LongBuffer images = VulkanFfm.longs(arena, imageCountOut.get(0));
-            check(vkGetSwapchainImagesKHR(device, newSwapchain, imageCountOut, images), "vkGetSwapchainImagesKHR");
-            long[] newImages = new long[imageCountOut.get(0)];
-            long[] newViews = new long[imageCountOut.get(0)];
-            for (int i = 0; i < newImages.length; i++) {
-                newImages[i] = images.get(i);
-                VkImageViewCreateInfo viewInfo = VulkanFfm.struct(arena, VkImageViewCreateInfo.SIZEOF, VkImageViewCreateInfo.ALIGNOF, VkImageViewCreateInfo::create)
-                        .sType$Default()
-                        .image(newImages[i])
-                        .viewType(VK_IMAGE_VIEW_TYPE_2D)
-                        .format(chosen.format())
-                        .subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
-                                .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1));
-                LongBuffer pView = VulkanFfm.longs(arena, 1);
-                check(vkCreateImageView(device, viewInfo, null, pView), "vkCreateImageView(swapchain)");
-                newViews[i] = pView.get(0);
+                long[] previousViews = target.swapchainViews;
+                VulkanPresentationDepth[] previousDepths = target.presentationDepths;
+                target.swapchain = newSwapchain;
+                target.swapchainImages = newImages;
+                target.swapchainViews = newViews;
+                target.swapchainInitialized = new boolean[newImages.length];
+                target.presentationDepths = newDepths;
+                target.presentationDepthInitialized = new boolean[newDepths.length];
+                target.swapchainWidth = width;
+                target.swapchainHeight = height;
+                target.colorFormat = newColorFormat;
+
+                destroyImageViews(previousViews);
+                destroyPresentationDepths(previousDepths);
+                if (oldSwapchain != 0L) vkDestroySwapchainKHR(device, oldSwapchain, null);
+                return true;
+            } catch (RuntimeException | Error failure) {
+                destroyImageViews(newViews);
+                destroyPresentationDepths(newDepths);
+                vkDestroySwapchainKHR(device, newSwapchain, null);
+                if (oldSwapchain != 0L) {
+                    destroySwapchainViews(target);
+                    vkDestroySwapchainKHR(device, oldSwapchain, null);
+                    target.swapchain = 0L;
+                    target.imageAcquired = false;
+                    target.imageIndex = -1;
+                    target.currentAcquisition = 0L;
+                    target.terminalFailure = failure;
+                }
+                throw failure;
             }
+        }
+    }
 
-            destroySwapchainViews(target);
-            if (oldSwapchain != 0L) vkDestroySwapchainKHR(device, oldSwapchain, null);
-            target.swapchain = newSwapchain;
-            target.swapchainImages = newImages;
-            target.swapchainViews = newViews;
-            target.swapchainInitialized = new boolean[newImages.length];
-            target.swapchainWidth = width;
-            target.swapchainHeight = height;
-            target.colorFormat = switch (chosen.format()) {
-                case VK_FORMAT_B8G8R8A8_UNORM -> TextureFormat.BGRA8_UNORM;
-                case VK_FORMAT_R8G8B8A8_UNORM -> TextureFormat.RGBA8_UNORM;
-                default -> throw new IllegalStateException("chosen swapchain format lacks portable TextureFormat mapping");
-            };
-            return true;
+    private VulkanPresentationDepth createPresentationDepth(
+            int width,
+            int height,
+            Arena arena) {
+        int format = VulkanMappings.format(TextureFormat.D32_FLOAT);
+        VkImageCreateInfo imageInfo = VulkanFfm.struct(
+                arena,
+                VkImageCreateInfo.SIZEOF,
+                VkImageCreateInfo.ALIGNOF,
+                VkImageCreateInfo::create)
+                .sType$Default()
+                .imageType(VK_IMAGE_TYPE_2D)
+                .format(format)
+                .extent(e -> e.width(width).height(height).depth(1))
+                .mipLevels(1)
+                .arrayLayers(1)
+                .samples(VK_SAMPLE_COUNT_1_BIT)
+                .tiling(VK_IMAGE_TILING_OPTIMAL)
+                .usage(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+                .sharingMode(VK_SHARING_MODE_EXCLUSIVE)
+                .initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+        LongBuffer pImage = VulkanFfm.longs(arena, 1);
+        check(vkCreateImage(device, imageInfo, null, pImage),
+                "vkCreateImage(presentation depth)");
+        long image = pImage.get(0);
+        long memory = 0L;
+        long view = 0L;
+        try {
+            VkMemoryRequirements requirements = VulkanFfm.struct(
+                    arena,
+                    VkMemoryRequirements.SIZEOF,
+                    VkMemoryRequirements.ALIGNOF,
+                    VkMemoryRequirements::create);
+            vkGetImageMemoryRequirements(device, image, requirements);
+            int memoryType = findMemoryType(
+                    requirements.memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, arena);
+            memory = allocateMemory(requirements.size(), memoryType, arena);
+            check(vkBindImageMemory(device, image, memory, 0),
+                    "vkBindImageMemory(presentation depth)");
+
+            VkImageViewCreateInfo viewInfo = VulkanFfm.struct(
+                    arena,
+                    VkImageViewCreateInfo.SIZEOF,
+                    VkImageViewCreateInfo.ALIGNOF,
+                    VkImageViewCreateInfo::create)
+                    .sType$Default()
+                    .image(image)
+                    .viewType(VK_IMAGE_VIEW_TYPE_2D)
+                    .format(format)
+                    .subresourceRange(r -> r.aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT)
+                            .baseMipLevel(0).levelCount(1)
+                            .baseArrayLayer(0).layerCount(1));
+            LongBuffer pView = VulkanFfm.longs(arena, 1);
+            check(vkCreateImageView(device, viewInfo, null, pView),
+                    "vkCreateImageView(presentation depth)");
+            view = pView.get(0);
+            return new VulkanPresentationDepth(image, memory, view);
+        } catch (RuntimeException | Error failure) {
+            if (view != 0L) vkDestroyImageView(device, view, null);
+            vkDestroyImage(device, image, null);
+            if (memory != 0L) vkFreeMemory(device, memory, null);
+            throw failure;
         }
     }
 
@@ -821,10 +960,25 @@ public final class VulkanDevice implements GraphicsDevice {
     }
 
     private void destroySwapchainViews(VulkanPresentationTarget target) {
-        for (long view : target.swapchainViews) if (view != 0L) vkDestroyImageView(device, view, null);
+        destroyImageViews(target.swapchainViews);
+        destroyPresentationDepths(target.presentationDepths);
         target.swapchainViews = new long[0];
         target.swapchainImages = new long[0];
         target.swapchainInitialized = new boolean[0];
+        target.presentationDepths = new VulkanPresentationDepth[0];
+        target.presentationDepthInitialized = new boolean[0];
+    }
+
+    private void destroyImageViews(long[] views) {
+        for (long view : views) if (view != 0L) vkDestroyImageView(device, view, null);
+    }
+
+    private void destroyPresentationDepths(VulkanPresentationDepth[] depths) {
+        VulkanPresentationDepth.destroyAll(
+                depths,
+                view -> vkDestroyImageView(device, view, null),
+                image -> vkDestroyImage(device, image, null),
+                memory -> vkFreeMemory(device, memory, null));
     }
 
     void destroyPresentationTarget(VulkanPresentationTarget target) {
@@ -945,17 +1099,20 @@ public final class VulkanDevice implements GraphicsDevice {
             ResourceState initialState) {
         requireOpen();
         try (Arena arena = Arena.ofConfined()) {
+            int nativeFormat = VulkanMappings.format(descriptor.format());
+            int nativeUsage = VulkanMappings.imageUsage(descriptor.usage())
+                    | (initialData == null ? 0 : VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            requireImageFormatSupport(descriptor.format(), nativeFormat, nativeUsage, arena);
             VkImageCreateInfo info = VulkanFfm.struct(arena, VkImageCreateInfo.SIZEOF, VkImageCreateInfo.ALIGNOF, VkImageCreateInfo::create)
                     .sType$Default()
                     .imageType(VK_IMAGE_TYPE_2D)
-                    .format(VulkanMappings.format(descriptor.format()))
+                    .format(nativeFormat)
                     .extent(e -> e.width(descriptor.width()).height(descriptor.height()).depth(1))
                     .mipLevels(1)
                     .arrayLayers(1)
                     .samples(VK_SAMPLE_COUNT_1_BIT)
                     .tiling(VK_IMAGE_TILING_OPTIMAL)
-                    .usage(VulkanMappings.imageUsage(descriptor.usage())
-                            | (initialData == null ? 0 : VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+                    .usage(nativeUsage)
                     .sharingMode(VK_SHARING_MODE_EXCLUSIVE)
                     .initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
             LongBuffer pImage = VulkanFfm.longs(arena, 1);
@@ -974,7 +1131,7 @@ public final class VulkanDevice implements GraphicsDevice {
                         .sType$Default()
                         .image(image)
                         .viewType(VK_IMAGE_VIEW_TYPE_2D)
-                        .format(VulkanMappings.format(descriptor.format()))
+                        .format(nativeFormat)
                         .subresourceRange(r -> r
                                 .aspectMask(VulkanMappings.imageAspect(descriptor.format()))
                                 .baseMipLevel(0).levelCount(1)
@@ -1129,7 +1286,7 @@ public final class VulkanDevice implements GraphicsDevice {
     private static long textureByteCount(TextureDescriptor descriptor) {
         long texels = Math.multiplyExact((long) descriptor.width(), descriptor.height());
         int bytesPerTexel = switch (descriptor.format()) {
-            case RGBA8_UNORM, BGRA8_UNORM, D32_FLOAT -> 4;
+            case RGBA8_UNORM, BGRA8_UNORM, D24_UNORM, D32_FLOAT -> 4;
         };
         return Math.multiplyExact(texels, bytesPerTexel);
     }
@@ -1142,6 +1299,32 @@ public final class VulkanDevice implements GraphicsDevice {
         LongBuffer pMemory = VulkanFfm.longs(arena, 1);
         check(vkAllocateMemory(device, info, null, pMemory), "vkAllocateMemory");
         return pMemory.get(0);
+    }
+
+    private void requireImageFormatSupport(
+            TextureFormat portableFormat,
+            int nativeFormat,
+            int usage,
+            Arena arena) {
+        VkImageFormatProperties properties = VulkanFfm.struct(
+                arena,
+                VkImageFormatProperties.SIZEOF,
+                VkImageFormatProperties.ALIGNOF,
+                VkImageFormatProperties::create);
+        int result = vkGetPhysicalDeviceImageFormatProperties(
+                physicalDevice,
+                nativeFormat,
+                VK_IMAGE_TYPE_2D,
+                VK_IMAGE_TILING_OPTIMAL,
+                usage,
+                0,
+                properties);
+        if (result == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+            throw new IllegalArgumentException(
+                    "Vulkan device does not support " + portableFormat
+                            + " for image usage 0x" + Integer.toHexString(usage));
+        }
+        check(result, "vkGetPhysicalDeviceImageFormatProperties(" + portableFormat + ")");
     }
 
     private int findMemoryType(int typeBits, int requiredFlags, Arena arena) {
@@ -1213,6 +1396,21 @@ public final class VulkanDevice implements GraphicsDevice {
         VulkanShader vertex = owned(descriptor.vertexShader(), VulkanShader.class, "vertex shader");
         VulkanShader fragment = owned(descriptor.fragmentShader(), VulkanShader.class, "fragment shader");
         try (Arena arena = Arena.ofConfined()) {
+            for (TextureFormat format : descriptor.colorFormats()) {
+                requireImageFormatSupport(
+                        format,
+                        VulkanMappings.format(format),
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                        arena);
+            }
+            if (descriptor.depthFormat().isPresent()) {
+                TextureFormat format = descriptor.depthFormat().orElseThrow();
+                requireImageFormatSupport(
+                        format,
+                        VulkanMappings.format(format),
+                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                        arena);
+            }
             List<VulkanDescriptorLayout> layouts = descriptorLayouts(descriptor.bindingLayouts());
             long pipelineLayout = createPipelineLayout(layouts, arena);
             long pipeline = 0L;
@@ -1458,6 +1656,7 @@ public final class VulkanDevice implements GraphicsDevice {
         if (!(vkTarget instanceof VulkanPresentationTarget presentation)) {
             throw new IllegalArgumentException("render target has no Vulkan presentation integration");
         }
+        presentation.requireOperational();
         if (!presentation.imageAcquired) {
             if (presentation.skippedPresentation.consume()) return;
             throw new IllegalStateException("presentation target has no acquired image");
@@ -1623,7 +1822,7 @@ public final class VulkanDevice implements GraphicsDevice {
     private void validatePresentationState(VulkanPresentationState state) {
         if (state == null) return;
         VulkanPresentationTarget target = state.target;
-        target.requireAlive();
+        target.requireOperational();
         if (!target.imageAcquired
                 || state.acquisition != target.currentAcquisition
                 || state.imageIndex != target.imageIndex) {
@@ -1635,11 +1834,16 @@ public final class VulkanDevice implements GraphicsDevice {
         if (target.swapchainInitialized[state.imageIndex] != state.expectedInitialized) {
             throw new IllegalStateException("presentation image state changed since command-list recording");
         }
+        if (target.presentationDepthInitialized[state.imageIndex]
+                != state.expectedDepthInitialized) {
+            throw new IllegalStateException(
+                    "presentation depth state changed since command-list recording");
+        }
     }
 
     private static void validateSkippedPresentation(VulkanPresentationTarget target) {
         if (target == null) return;
-        target.requireAlive();
+        target.requireOperational();
         if (!target.swapchainRecreation.pending() || target.imageAcquired) {
             throw new IllegalStateException(
                     "skipped presentation command list is no longer associated with a deferred acquisition");
@@ -1653,6 +1857,11 @@ public final class VulkanDevice implements GraphicsDevice {
         list.commandState.commitFinalStates();
         if (list.presentationState != null && list.presentationState.recordingInitialized()) {
             list.presentationState.target.swapchainInitialized[list.presentationState.imageIndex] = true;
+        }
+        if (list.presentationState != null
+                && list.presentationState.recordingDepthInitialized()) {
+            list.presentationState.target.presentationDepthInitialized[
+                    list.presentationState.imageIndex] = true;
         }
     }
 

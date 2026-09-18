@@ -7,16 +7,20 @@ import io.github.antonschnfeld.drakon.graphics.resource.TextureFormat;
 import java.util.List;
 
 import static org.lwjgl.glfw.GLFW.glfwSwapBuffers;
+import static org.lwjgl.opengl.GL11C.glGetInteger;
+import static org.lwjgl.opengl.GL30C.*;
 
 /** GLFW framebuffer-zero facade for an externally owned OpenGL context. */
 final class GlfwOpenGLRenderTarget implements OpenGLRenderTargetAccess {
     private final OpenGLDevice device;
     private final GlfwWindow window;
+    private final TextureFormat depthFormat;
     private boolean closed;
 
     GlfwOpenGLRenderTarget(OpenGLDevice device, GlfwWindow window) {
         this.device = device;
         this.window = window;
+        depthFormat = verifyDefaultFramebufferDepth();
     }
 
     @Override
@@ -51,7 +55,7 @@ final class GlfwOpenGLRenderTarget implements OpenGLRenderTargetAccess {
     @Override
     public TextureFormat depthFormat() {
         requireOpen();
-        return null;
+        return depthFormat;
     }
 
     @Override
@@ -62,6 +66,26 @@ final class GlfwOpenGLRenderTarget implements OpenGLRenderTargetAccess {
 
     private void requireOpen() {
         if (closed) throw new IllegalStateException("OpenGL presentation target is closed");
+    }
+
+    private static TextureFormat verifyDefaultFramebufferDepth() {
+        int previous = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        try {
+            int bits = glGetFramebufferAttachmentParameteri(
+                    GL_DRAW_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE);
+            int componentType = glGetFramebufferAttachmentParameteri(
+                    GL_DRAW_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE);
+            if (bits != 24 || componentType != GL_UNSIGNED_NORMALIZED) {
+                throw new IllegalStateException(
+                        "GLFW default framebuffer depth is not D24_UNORM: depthSize="
+                                + bits + ", componentType=0x"
+                                + Integer.toHexString(componentType));
+            }
+            return TextureFormat.D24_UNORM;
+        } finally {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previous);
+        }
     }
 
     /** Closes only the facade; the GLFW window remains externally owned. */

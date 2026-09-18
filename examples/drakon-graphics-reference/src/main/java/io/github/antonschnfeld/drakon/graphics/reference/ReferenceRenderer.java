@@ -79,6 +79,7 @@ public final class ReferenceRenderer implements AutoCloseable {
     private final Shader presentFragmentShader;
     private GraphicsState presentState;
     private TextureFormat presentationFormat;
+    private TextureFormat presentationDepthFormat;
     private OffscreenResources offscreen;
     private boolean closed;
 
@@ -170,7 +171,8 @@ public final class ReferenceRenderer implements AutoCloseable {
         presentVertexShader = createShader(ShaderStage.VERTEX, shaders.postVertex());
         presentFragmentShader = createShader(ShaderStage.FRAGMENT, shaders.postFragment());
         presentationFormat = presentationTarget.colorFormats().get(0);
-        presentState = createPresentState(presentationFormat);
+        presentationDepthFormat = presentationTarget.depthFormat();
+        presentState = createPresentState(presentationFormat, presentationDepthFormat);
         offscreen = createOffscreen(presentationTarget.width(), presentationTarget.height());
 
         initializeResourceStates(offscreen);
@@ -220,6 +222,7 @@ public final class ReferenceRenderer implements AutoCloseable {
                     ResourceState.SAMPLED_READ);
             commands.beginRendering(RenderingInfo.builder(presentationTarget)
                     .color(ColorAttachmentOps.clear(Color.BLACK))
+                    .depth(DepthAttachmentOps.clear(1.0f))
                     .build());
             commands.setGraphicsState(presentState);
             commands.setVertexBuffer(0, presentVertexBuffer, 0);
@@ -270,7 +273,9 @@ public final class ReferenceRenderer implements AutoCloseable {
                 .build();
     }
 
-    private GraphicsState createPresentState(TextureFormat format) {
+    private GraphicsState createPresentState(
+            TextureFormat format,
+            TextureFormat depthFormat) {
         return device.createGraphicsState(GraphicsStateDescriptor.builder()
                 .vertexShader(presentVertexShader)
                 .fragmentShader(presentFragmentShader)
@@ -282,6 +287,7 @@ public final class ReferenceRenderer implements AutoCloseable {
                 .bindingLayout(presentLayout)
                 .raster(new RasterState(CullMode.NONE))
                 .colorFormat(format)
+                .depthFormat(depthFormat)
                 .build());
     }
 
@@ -368,11 +374,14 @@ public final class ReferenceRenderer implements AutoCloseable {
 
     private void ensurePresentationStateCompatible() {
         TextureFormat currentFormat = presentationTarget.colorFormats().get(0);
-        if (currentFormat == presentationFormat) return;
-        GraphicsState replacement = createPresentState(currentFormat);
+        TextureFormat currentDepthFormat = presentationTarget.depthFormat();
+        if (currentFormat == presentationFormat
+                && currentDepthFormat == presentationDepthFormat) return;
+        GraphicsState replacement = createPresentState(currentFormat, currentDepthFormat);
         GraphicsState previous = presentState;
         presentState = replacement;
         presentationFormat = currentFormat;
+        presentationDepthFormat = currentDepthFormat;
         previous.close();
         System.out.printf(
                 Locale.ROOT,

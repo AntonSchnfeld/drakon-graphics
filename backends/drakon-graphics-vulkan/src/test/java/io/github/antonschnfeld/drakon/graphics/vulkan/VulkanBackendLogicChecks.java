@@ -7,6 +7,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.VertexFormat;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexInputRate;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexLayout;
 import io.github.antonschnfeld.drakon.graphics.resource.BufferUsage;
+import io.github.antonschnfeld.drakon.graphics.resource.TextureFormat;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -15,6 +16,7 @@ import java.nio.IntBuffer;
 import java.util.List;
 import java.util.Set;
 import java.util.ArrayList;
+import java.util.HashSet;
 
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
@@ -23,6 +25,7 @@ import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WAR
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
 import static org.lwjgl.vulkan.EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+import static org.lwjgl.vulkan.VK10.VK_FORMAT_X8_D24_UNORM_PACK32;
 
 /** Hardware-free checks for Vulkan submission-state and resource-lifetime bookkeeping. */
 public final class VulkanBackendLogicChecks {
@@ -35,6 +38,9 @@ public final class VulkanBackendLogicChecks {
         staleObservedUsageIsRejected();
         rejectedRecordingDoesNotCommit();
         presentationStateIsRecordingLocal();
+        presentationDepthStorageIsPerSwapchainImage();
+        partialPresentationDepthCleanupIsExact();
+        depthFormatsMapExactly();
         resourceLifetimeDefersNativeDeletion();
         resourceLifetimeIsIdempotentAndExactlyOnce();
         commandOwnershipTransfersOrReleasesExactlyOnce();
@@ -167,12 +173,71 @@ public final class VulkanBackendLogicChecks {
     }
 
     private static void presentationStateIsRecordingLocal() {
-        VulkanPresentationState state = new VulkanPresentationState(null, 7L, 2, false);
+        VulkanPresentationState state = new VulkanPresentationState(
+                null, 7L, 2, false, false);
         require(!state.expectedInitialized, "presentation expectation started initialized");
         require(!state.recordingInitialized(), "presentation recording started initialized");
+        require(!state.expectedDepthInitialized,
+                "presentation depth expectation started initialized");
+        require(!state.recordingDepthInitialized(),
+                "presentation depth recording started initialized");
         state.markInitialized();
+        state.markDepthInitialized();
         require(state.recordingInitialized(), "presentation recording state did not advance");
+        require(state.recordingDepthInitialized(),
+                "presentation depth recording state did not advance");
         require(!state.expectedInitialized, "recording mutated committed presentation expectation");
+        require(!state.expectedDepthInitialized,
+                "recording mutated committed presentation depth expectation");
+    }
+
+    private static void presentationDepthStorageIsPerSwapchainImage() {
+        require(VulkanPresentationTarget.DEPTH_FORMAT == TextureFormat.D32_FLOAT,
+                "Vulkan presentation target did not report D32_FLOAT depth");
+
+        long[] swapchainImages = {1L, 2L, 3L};
+        VulkanPresentationDepth[] depths = {
+                new VulkanPresentationDepth(11L, 21L, 31L),
+                new VulkanPresentationDepth(12L, 22L, 32L),
+                new VulkanPresentationDepth(13L, 23L, 33L)
+        };
+        VulkanPresentationTarget.validateDepthStorage(swapchainImages, depths);
+        expect(IllegalStateException.class, () -> VulkanPresentationTarget.validateDepthStorage(
+                swapchainImages,
+                new VulkanPresentationDepth[] {
+                        depths[0], depths[0], depths[2]
+                }));
+        expect(IllegalStateException.class, () -> VulkanPresentationTarget.validateDepthStorage(
+                swapchainImages,
+                new VulkanPresentationDepth[] {depths[0], depths[1]}));
+    }
+
+    private static void depthFormatsMapExactly() {
+        require(VulkanMappings.format(TextureFormat.D24_UNORM)
+                        == VK_FORMAT_X8_D24_UNORM_PACK32,
+                "D24_UNORM did not map to VK_FORMAT_X8_D24_UNORM_PACK32");
+    }
+
+    private static void partialPresentationDepthCleanupIsExact() {
+        VulkanPresentationDepth[] partial = {
+                new VulkanPresentationDepth(11L, 21L, 31L),
+                new VulkanPresentationDepth(12L, 22L, 32L),
+                null
+        };
+        Set<Long> views = new HashSet<>();
+        Set<Long> images = new HashSet<>();
+        Set<Long> memories = new HashSet<>();
+        VulkanPresentationDepth.destroyAll(
+                partial,
+                value -> require(views.add(value), "presentation depth view destroyed twice"),
+                value -> require(images.add(value), "presentation depth image destroyed twice"),
+                value -> require(memories.add(value), "presentation depth memory freed twice"));
+        require(views.equals(Set.of(31L, 32L)),
+                "partial cleanup missed a presentation depth view");
+        require(images.equals(Set.of(11L, 12L)),
+                "partial cleanup missed a presentation depth image");
+        require(memories.equals(Set.of(21L, 22L)),
+                "partial cleanup missed a presentation depth allocation");
     }
 
     private static void resourceLifetimeDefersNativeDeletion() {
@@ -368,6 +433,10 @@ public final class VulkanBackendLogicChecks {
         VulkanPresentationTarget target = new VulkanPresentationTarget(null, null, 0L);
         target.swapchainWidth = 800;
         target.swapchainHeight = 600;
+        VulkanPresentationDepth[] retainedDepth = {
+                new VulkanPresentationDepth(41L, 42L, 43L)
+        };
+        target.presentationDepths = retainedDepth;
 
         target.swapchainRecreation.request();
         require(target.swapchainRecreation.pending(), "recreation request was not retained");
@@ -375,6 +444,8 @@ public final class VulkanBackendLogicChecks {
                 "deferred recreation counted as completed");
         require(target.swapchainWidth == 800 && target.swapchainHeight == 600,
                 "deferred recreation changed the last valid target extent");
+        require(target.presentationDepths == retainedDepth,
+                "deferred recreation discarded the last valid presentation depth");
 
         target.swapchainWidth = 1280;
         target.swapchainHeight = 720;

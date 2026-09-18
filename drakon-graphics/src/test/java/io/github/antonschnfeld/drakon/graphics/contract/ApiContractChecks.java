@@ -54,6 +54,9 @@ public final class ApiContractChecks {
     }
 
     private static void checkPortableDepthState() {
+        if (!TextureFormat.D24_UNORM.isDepth() || !TextureFormat.D32_FLOAT.isDepth()) {
+            throw new AssertionError("portable depth formats must report depth semantics");
+        }
         expect(IllegalArgumentException.class,
                 () -> new DepthState(false, true, CompareOp.ALWAYS));
     }
@@ -195,18 +198,58 @@ public final class ApiContractChecks {
             expect(IllegalArgumentException.class, () -> second.present(target));
 
             RenderTarget presentationTarget = ProbePresentationTargets.create(
-                    second, 1280, 720, List.of(TextureFormat.RGBA8_UNORM), null);
+                    second, 1280, 720, List.of(TextureFormat.RGBA8_UNORM),
+                    TextureFormat.D24_UNORM);
+            if (presentationTarget.depthFormat() != TextureFormat.D24_UNORM) {
+                throw new AssertionError("presentation target did not expose its depth format");
+            }
             second.present(presentationTarget);
             expect(IllegalArgumentException.class, () -> first.present(presentationTarget));
 
             RenderTarget anotherPresentationTarget = ProbePresentationTargets.create(
                     second, 640, 480, List.of(TextureFormat.RGBA8_UNORM), null);
             second.present(anotherPresentationTarget);
+            try (CommandEncoder colorOnlyPresentationEncoder = second.createCommandEncoder()) {
+                colorOnlyPresentationEncoder.beginRendering(
+                        RenderingInfo.builder(anotherPresentationTarget)
+                                .color(ColorAttachmentOps.clear(Color.BLACK))
+                                .build());
+                colorOnlyPresentationEncoder.endRendering();
+                try (CommandList colorOnlyCommands = colorOnlyPresentationEncoder.finish()) {
+                    second.submit(colorOnlyCommands);
+                }
+            }
 
-            try (CommandEncoder presentationEncoder = second.createCommandEncoder()) {
+            expect(IllegalArgumentException.class, () -> RenderingInfo.builder(presentationTarget)
+                    .color(ColorAttachmentOps.clear(Color.BLACK))
+                    .build());
+            try (Shader presentationVertex = second.createShader(new ShaderDescriptor(
+                        ShaderStage.VERTEX, "main", acceptedCode));
+                    Shader presentationFragment = second.createShader(new ShaderDescriptor(
+                            ShaderStage.FRAGMENT, "main", acceptedCode));
+                    GraphicsState presentationState = second.createGraphicsState(
+                        GraphicsStateDescriptor.builder()
+                                .vertexShader(presentationVertex)
+                                .fragmentShader(presentationFragment)
+                                .depth(DepthState.standard())
+                                .colorFormat(TextureFormat.RGBA8_UNORM)
+                                .depthFormat(TextureFormat.D24_UNORM)
+                                .build());
+                    GraphicsState noDepthState = second.createGraphicsState(
+                            GraphicsStateDescriptor.builder()
+                                    .vertexShader(presentationVertex)
+                                    .fragmentShader(presentationFragment)
+                                    .colorFormat(TextureFormat.RGBA8_UNORM)
+                                    .build());
+                    CommandEncoder presentationEncoder = second.createCommandEncoder()) {
                 presentationEncoder.beginRendering(RenderingInfo.builder(presentationTarget)
                         .color(ColorAttachmentOps.clear(Color.BLACK))
+                        .depth(DepthAttachmentOps.clear(1.0f))
                         .build());
+                expect(IllegalStateException.class,
+                        () -> presentationEncoder.setGraphicsState(noDepthState));
+                presentationEncoder.setGraphicsState(presentationState);
+                presentationEncoder.draw(3, 1, 0, 0);
                 presentationEncoder.endRendering();
                 try (CommandList presentationCommands = presentationEncoder.finish()) {
                     second.submit(presentationCommands);

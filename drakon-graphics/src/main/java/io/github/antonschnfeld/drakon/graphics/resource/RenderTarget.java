@@ -15,6 +15,12 @@ import java.util.List;
  * integration. In either case, it is associated with exactly one graphics
  * device and may only be used with that device.</p>
  *
+ * <p>Presentation-backed targets may contain backend-owned color and depth
+ * attachments. Their formats are reported through {@link #colorFormats()} and
+ * {@link #depthFormat()} for graphics-state compatibility, but the attachments
+ * are not exposed as public {@link Texture} objects. Their native lifetime and
+ * resource state remain private to the backend or external integration.</p>
+ *
  * <p>A target created through
  * {@link GraphicsDevice#createRenderTarget(RenderTargetDescriptor)} references
  * caller-owned textures. Closing that target releases only the backend object
@@ -67,8 +73,10 @@ public interface RenderTarget extends GpuResource {
      *
      * <p>The nullable return intentionally mirrors the optional nature of depth
      * attachments without introducing another wrapper type into this small
-     * resource interface. Presentation-backed targets may report a different
-     * value after backend recreation.</p>
+     * resource interface. A non-null value describes compatibility and does not
+     * imply that the attachment is exposed as a public {@link Texture}; a
+     * presentation target may own its depth storage internally. Presentation-backed
+     * targets may report a different value after backend recreation.</p>
      *
      * @return depth format, or {@code null} when the target has no depth attachment
      */

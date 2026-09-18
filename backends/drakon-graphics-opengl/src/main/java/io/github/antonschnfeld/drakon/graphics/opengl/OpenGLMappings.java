@@ -14,6 +14,7 @@ final class OpenGLMappings {
     static int textureInternalFormat(TextureFormat format) {
         return switch (format) {
             case RGBA8_UNORM, BGRA8_UNORM -> GL_RGBA8;
+            case D24_UNORM -> GL_DEPTH_COMPONENT24;
             case D32_FLOAT -> GL_DEPTH_COMPONENT32F;
         };
     }
@@ -22,13 +23,14 @@ final class OpenGLMappings {
         return switch (format) {
             case RGBA8_UNORM -> GL_RGBA;
             case BGRA8_UNORM -> GL_BGRA;
-            case D32_FLOAT -> GL_DEPTH_COMPONENT;
+            case D24_UNORM, D32_FLOAT -> GL_DEPTH_COMPONENT;
         };
     }
 
     static int textureExternalType(TextureFormat format) {
         return switch (format) {
             case RGBA8_UNORM, BGRA8_UNORM -> GL_UNSIGNED_BYTE;
+            case D24_UNORM -> GL_UNSIGNED_INT;
             case D32_FLOAT -> GL_FLOAT;
         };
     }
