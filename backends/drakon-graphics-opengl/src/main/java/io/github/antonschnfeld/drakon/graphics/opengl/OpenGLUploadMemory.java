@@ -10,17 +10,19 @@ import java.util.function.Consumer;
 final class OpenGLUploadMemory {
     private OpenGLUploadMemory() {}
 
-    static void withNativeBuffer(ByteBuffer source, Consumer<ByteBuffer> upload) {
+    static void withNativeBuffer(MemorySegment source, Consumer<ByteBuffer> upload) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(upload, "upload");
-        ByteBuffer selected = source.slice();
-        if (selected.isDirect()) {
-            upload.accept(selected);
+        if (source.byteSize() > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("OpenGL upload exceeds the LWJGL ByteBuffer limit");
+        }
+        if (source.isNative()) {
+            upload.accept(source.asByteBuffer());
             return;
         }
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment storage = arena.allocate(selected.remaining(), Byte.BYTES);
-            storage.copyFrom(MemorySegment.ofBuffer(selected));
+            MemorySegment storage = arena.allocate(source.byteSize(), Byte.BYTES);
+            storage.copyFrom(source);
             upload.accept(storage.asByteBuffer());
         }
     }

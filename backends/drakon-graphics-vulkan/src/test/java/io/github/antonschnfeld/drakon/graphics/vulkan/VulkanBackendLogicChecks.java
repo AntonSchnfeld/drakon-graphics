@@ -10,7 +10,6 @@ import io.github.antonschnfeld.drakon.graphics.resource.BufferUsage;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.List;
@@ -289,20 +288,22 @@ public final class VulkanBackendLogicChecks {
     }
 
     private static void mappedCopyUsesTheSelectedRange() {
-        ByteBuffer source = ByteBuffer.allocate(8);
-        for (int i = 0; i < source.capacity(); i++) source.put(i, (byte) (20 + i));
-        source.position(3).limit(7);
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment destination = arena.allocate(4, Byte.BYTES);
-            VulkanFfm.copyToBorrowed(source, destination.address(), destination.byteSize());
-            require(source.position() == 3, "mapped copy changed caller position");
-            require(source.limit() == 7, "mapped copy changed caller limit");
-            for (int i = 0; i < destination.byteSize(); i++) {
+        try (Arena destinationArena = Arena.ofConfined()) {
+            MemorySegment destination = destinationArena.allocate(4, Byte.BYTES);
+            try (Arena sourceArena = Arena.ofConfined()) {
+                MemorySegment allocation = sourceArena.allocate(8);
+                for (long i = 0; i < allocation.byteSize(); i++) {
+                    allocation.setAtIndex(ValueLayout.JAVA_BYTE, i, (byte) (20 + i));
+                }
+                MemorySegment source = allocation.asSlice(3, 4);
+                VulkanFfm.copyToBorrowed(source, destination.address(), destination.byteSize());
+                expect(IllegalArgumentException.class,
+                        () -> VulkanFfm.copyToBorrowed(source, destination.address(), 3));
+            }
+            for (long i = 0; i < destination.byteSize(); i++) {
                 require(destination.get(ValueLayout.JAVA_BYTE, i) == (byte) (23 + i),
                         "mapped copy changed bytes");
             }
-            expect(IllegalArgumentException.class,
-                    () -> VulkanFfm.copyToBorrowed(source, destination.address(), 3));
         }
     }
 

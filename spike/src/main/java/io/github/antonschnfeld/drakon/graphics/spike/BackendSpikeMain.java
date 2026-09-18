@@ -46,8 +46,9 @@ import io.github.antonschnfeld.drakon.graphics.vulkan.VulkanPresentation;
 import org.lwjgl.opengl.GL;
 
 import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Locale;
 import java.util.Set;
 
@@ -469,9 +470,7 @@ public final class BackendSpikeMain {
     }
 
     private static Texture sampledPixel(GraphicsDevice device, byte value) {
-        ByteBuffer pixel = ByteBuffer.allocate(4)
-                .put(value).put(value).put(value).put((byte) 0xFF)
-                .flip();
+        MemorySegment pixel = MemorySegment.ofArray(new byte[] {value, value, value, (byte) 0xFF});
         return device.createTexture(
                 new TextureDescriptor(1, 1, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)),
                 pixel,
@@ -486,16 +485,18 @@ public final class BackendSpikeMain {
         return new NativeBindings(texture, uniform);
     }
 
-    /** Exercises heap and direct buffer initialization before the existing triangle loop. */
-    private static Buffer createInitializationSmokeBuffer(GraphicsDevice device, boolean direct) {
-        ByteBuffer data = initializationData(8, 2, new byte[] {1, 2, 3, 4}, direct);
-        int position = data.position();
-        int limit = data.limit();
-        Buffer buffer = device.createBuffer(new BufferDescriptor(8, Set.of(BufferUsage.VERTEX)), data);
-        if (data.position() != position || data.limit() != limit) {
-            throw new AssertionError("createBuffer changed the caller ByteBuffer position or limit");
+    /** Exercises heap and native sliced-segment initialization. */
+    private static Buffer createInitializationSmokeBuffer(GraphicsDevice device, boolean nativeInput) {
+        if (nativeInput) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = initializationData(
+                        arena.allocate(8), 2, new byte[] {1, 2, 3, 4});
+                return device.createBuffer(new BufferDescriptor(8, Set.of(BufferUsage.VERTEX)), data);
+            }
         }
-        return buffer;
+        MemorySegment data = initializationData(
+                MemorySegment.ofArray(new byte[8]), 2, new byte[] {1, 2, 3, 4});
+        return device.createBuffer(new BufferDescriptor(8, Set.of(BufferUsage.VERTEX)), data);
     }
 
     private static void verifyInitializationSmokeBuffer(Buffer buffer) {
@@ -506,17 +507,9 @@ public final class BackendSpikeMain {
 
     /** Exercises heap initialization larger than native-call scratch storage. */
     private static Buffer createLargeHeapInitializationSmokeBuffer(GraphicsDevice device) {
-        ByteBuffer data = ByteBuffer.allocate(LARGE_HEAP_INITIALIZATION_BYTES + 8);
-        data.position(4);
-        data.limit(data.position() + LARGE_HEAP_INITIALIZATION_BYTES);
-        int position = data.position();
-        int limit = data.limit();
-        Buffer buffer = device.createBuffer(new BufferDescriptor(LARGE_HEAP_INITIALIZATION_BYTES,
-                Set.of(BufferUsage.VERTEX)), data);
-        if (data.position() != position || data.limit() != limit) {
-            throw new AssertionError("createBuffer changed the large heap ByteBuffer position or limit");
-        }
-        return buffer;
+        MemorySegment allocation = MemorySegment.ofArray(new byte[LARGE_HEAP_INITIALIZATION_BYTES + 8]);
+        return device.createBuffer(new BufferDescriptor(LARGE_HEAP_INITIALIZATION_BYTES,
+                Set.of(BufferUsage.VERTEX)), allocation.asSlice(4, LARGE_HEAP_INITIALIZATION_BYTES));
     }
 
     private static void verifyLargeHeapInitializationSmokeBuffer(Buffer buffer) {
@@ -526,30 +519,29 @@ public final class BackendSpikeMain {
         }
     }
 
-    /** Exercises heap and direct texture initialization before the existing triangle loop. */
-    private static Texture createInitializationSmokeTexture(GraphicsDevice device, boolean direct) {
-        ByteBuffer pixels = initializationData(20, 2, new byte[] {
+    /** Exercises heap and native sliced-segment texture initialization. */
+    private static Texture createInitializationSmokeTexture(GraphicsDevice device, boolean nativeInput) {
+        byte[] values = {
                 (byte) 255, 0, 0, (byte) 255,
                 0, (byte) 255, 0, (byte) 255,
                 0, 0, (byte) 255, (byte) 255,
                 (byte) 255, (byte) 255, (byte) 255, (byte) 255
-        }, direct);
-        int position = pixels.position();
-        int limit = pixels.limit();
-        Texture texture = device.createTexture(new TextureDescriptor(2, 2, TextureFormat.RGBA8_UNORM,
-                Set.of(TextureUsage.SAMPLED)), pixels, ResourceState.SAMPLED_READ);
-        if (pixels.position() != position || pixels.limit() != limit) {
-            throw new AssertionError("createTexture changed the caller ByteBuffer position or limit");
+        };
+        TextureDescriptor descriptor = new TextureDescriptor(
+                2, 2, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED));
+        if (nativeInput) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment pixels = initializationData(arena.allocate(20), 2, values);
+                return device.createTexture(descriptor, pixels, ResourceState.SAMPLED_READ);
+            }
         }
-        return texture;
+        MemorySegment pixels = initializationData(MemorySegment.ofArray(new byte[20]), 2, values);
+        return device.createTexture(descriptor, pixels, ResourceState.SAMPLED_READ);
     }
 
-    private static ByteBuffer initializationData(int capacity, int offset, byte[] bytes, boolean direct) {
-        ByteBuffer data = direct ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
-        data.position(offset);
-        data.put(bytes);
-        data.flip();
-        data.position(offset);
+    private static MemorySegment initializationData(MemorySegment allocation, long offset, byte[] bytes) {
+        MemorySegment data = allocation.asSlice(offset, bytes.length);
+        data.copyFrom(MemorySegment.ofArray(bytes));
         return data;
     }
 
@@ -562,14 +554,20 @@ public final class BackendSpikeMain {
 
     private static TexturedMesh createTexturedMesh(
             GraphicsDevice device, RenderTarget target, Shader vertex, Shader fragment) {
-        Buffer vertexBuffer = device.createBuffer(
-                new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)), quadVertices());
-        Buffer indexBuffer = device.createBuffer(
-                new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)), quadIndices());
-        Texture texture = device.createTexture(
-                new TextureDescriptor(4, 4, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)),
-                quadrantTexture(),
-                ResourceState.SAMPLED_READ);
+        Buffer vertexBuffer;
+        Buffer indexBuffer;
+        Texture texture;
+        try (Arena arena = Arena.ofConfined()) {
+            vertexBuffer = device.createBuffer(
+                    new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
+                    quadVertices(arena));
+            indexBuffer = device.createBuffer(
+                    new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)),
+                    quadIndices(arena));
+            texture = device.createTexture(
+                    new TextureDescriptor(4, 4, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)),
+                    quadrantTexture(arena), ResourceState.SAMPLED_READ);
+        }
         Sampler sampler = device.createSampler(new SamplerDescriptor(
                 SamplerDescriptor.Filter.NEAREST,
                 SamplerDescriptor.Filter.NEAREST,
@@ -597,16 +595,22 @@ public final class BackendSpikeMain {
 
     private static DynamicMesh createDynamicMesh(
             GraphicsDevice device, RenderTarget target, Shader vertex, Shader fragment) {
-        Buffer vertexBuffer = device.createBuffer(
-                new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)), quadVertices());
-        Buffer indexBuffer = device.createBuffer(
-                new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)), quadIndices());
+        Buffer vertexBuffer;
+        Buffer indexBuffer;
+        Texture texture;
+        try (Arena arena = Arena.ofConfined()) {
+            vertexBuffer = device.createBuffer(
+                    new BufferDescriptor(4L * 4 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
+                    quadVertices(arena));
+            indexBuffer = device.createBuffer(
+                    new BufferDescriptor(6L * Short.BYTES, Set.of(BufferUsage.INDEX)),
+                    quadIndices(arena));
+            texture = device.createTexture(
+                    new TextureDescriptor(4, 4, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)),
+                    quadrantTexture(arena), ResourceState.SAMPLED_READ);
+        }
         Buffer dynamicBuffer = device.createBuffer(
                 new BufferDescriptor(4L * Float.BYTES, Set.of(BufferUsage.UNIFORM)));
-        Texture texture = device.createTexture(
-                new TextureDescriptor(4, 4, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)),
-                quadrantTexture(),
-                ResourceState.SAMPLED_READ);
         Sampler sampler = device.createSampler(new SamplerDescriptor(
                 SamplerDescriptor.Filter.NEAREST,
                 SamplerDescriptor.Filter.NEAREST,
@@ -651,10 +655,14 @@ public final class BackendSpikeMain {
             commands.transition(mesh.dynamicBuffer(), ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
         }));
         long stressStartNanos = System.nanoTime();
-        for (int submittedFrames = 0; submittedFrames < DYNAMIC_STRESS_FRAMES; submittedFrames++) {
-            renderDynamicFrame(renderer, target, mesh, animationPhase(animationStartNanos));
-            device.present(target);
-            pollEvents.run();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment frameData = arena.allocate(4L * Float.BYTES, Float.BYTES);
+            for (int submittedFrames = 0; submittedFrames < DYNAMIC_STRESS_FRAMES; submittedFrames++) {
+                renderDynamicFrame(
+                        renderer, target, mesh, frameData, animationPhase(animationStartNanos));
+                device.present(target);
+                pollEvents.run();
+            }
         }
         double stressSeconds = elapsedSeconds(stressStartNanos);
         double framesPerSecond = DYNAMIC_STRESS_FRAMES / stressSeconds;
@@ -665,8 +673,12 @@ public final class BackendSpikeMain {
     }
 
     private static void renderDynamicFrame(
-            Renderer renderer, RenderTarget target, DynamicMesh mesh, double phase) {
-        ByteBuffer frameData = dynamicFrameData(phase);
+            Renderer renderer,
+            RenderTarget target,
+            DynamicMesh mesh,
+            MemorySegment frameData,
+            double phase) {
+        updateDynamicFrameData(frameData, phase);
         RenderPass pass = commands -> {
             commands.writeBuffer(mesh.dynamicBuffer(), 0, frameData);
             // RenderingInfo is rebuilt because a presentation-backed target can
@@ -702,15 +714,11 @@ public final class BackendSpikeMain {
         throw new AssertionError(label + " was accepted");
     }
 
-    private static ByteBuffer dynamicFrameData(double phase) {
-        ByteBuffer data = ByteBuffer.allocate(24).order(ByteOrder.nativeOrder());
-        data.position(4);
-        data.putFloat(0.16f * (float) Math.sin(phase));
-        data.putFloat(0.10f * (float) Math.cos(phase * 0.73f));
-        data.putFloat(0.72f + 0.12f * (float) Math.sin(phase * 0.41f));
-        data.putFloat(0.55f + 0.45f * (float) Math.sin(phase * 0.57f));
-        data.limit(data.position()).position(4);
-        return data;
+    private static void updateDynamicFrameData(MemorySegment data, double phase) {
+        data.setAtIndex(ValueLayout.JAVA_FLOAT, 0, 0.16f * (float) Math.sin(phase));
+        data.setAtIndex(ValueLayout.JAVA_FLOAT, 1, 0.10f * (float) Math.cos(phase * 0.73f));
+        data.setAtIndex(ValueLayout.JAVA_FLOAT, 2, 0.72f + 0.12f * (float) Math.sin(phase * 0.41f));
+        data.setAtIndex(ValueLayout.JAVA_FLOAT, 3, 0.55f + 0.45f * (float) Math.sin(phase * 0.57f));
     }
 
     private static void runVulkanLifetimeStress(
@@ -752,24 +760,26 @@ public final class BackendSpikeMain {
         device.present(target);
     }
 
-    private static ByteBuffer quadVertices() {
-        return ByteBuffer.allocate(4 * 4 * Float.BYTES).order(ByteOrder.nativeOrder())
+    private static MemorySegment quadVertices(Arena arena) {
+        SegmentWriter vertices = new SegmentWriter(arena.allocate(4 * 4 * Float.BYTES, Float.BYTES));
+        return vertices
                 .putFloat(-0.80f).putFloat(0.80f).putFloat(0.0f).putFloat(0.0f)
                 .putFloat(-0.80f).putFloat(-0.80f).putFloat(0.0f).putFloat(1.0f)
                 .putFloat(0.80f).putFloat(-0.80f).putFloat(1.0f).putFloat(1.0f)
                 .putFloat(0.80f).putFloat(0.80f).putFloat(1.0f).putFloat(0.0f)
-                .flip();
+                .writtenSegment();
     }
 
-    private static ByteBuffer quadIndices() {
-        return ByteBuffer.allocate(6 * Short.BYTES).order(ByteOrder.nativeOrder())
+    private static MemorySegment quadIndices(Arena arena) {
+        SegmentWriter indices = new SegmentWriter(arena.allocate(6 * Short.BYTES, Short.BYTES));
+        return indices
                 .putShort((short) 0).putShort((short) 1).putShort((short) 2)
                 .putShort((short) 2).putShort((short) 3).putShort((short) 0)
-                .flip();
+                .writtenSegment();
     }
 
-    private static ByteBuffer quadrantTexture() {
-        ByteBuffer texture = ByteBuffer.allocate(4 * 4 * 4);
+    private static MemorySegment quadrantTexture(Arena arena) {
+        SegmentWriter texture = new SegmentWriter(arena.allocate(4 * 4 * 4));
         for (int y = 0; y < 4; y++) {
             for (int x = 0; x < 4; x++) {
                 if (y < 2 && x < 2) putRgba(texture, 255, 32, 32);
@@ -778,11 +788,11 @@ public final class BackendSpikeMain {
                 else putRgba(texture, 255, 240, 32);
             }
         }
-        return texture.flip();
+        return texture.writtenSegment();
     }
 
-    private static void putRgba(ByteBuffer texture, int red, int green, int blue) {
-        texture.put((byte) red).put((byte) green).put((byte) blue).put((byte) 255);
+    private static void putRgba(SegmentWriter texture, int red, int green, int blue) {
+        texture.putByte((byte) red).putByte((byte) green).putByte((byte) blue).putByte((byte) 255);
     }
 
     private record NativeBindings(int texture, int uniformBuffer) {}
@@ -826,7 +836,7 @@ public final class BackendSpikeMain {
     }
 
     /** Compiles GLSL solely for the Vulkan smoke harness, not the backend. */
-    static ByteBuffer compileSpirv(String source, int kind) {
+    static MemorySegment compileSpirv(String source, int kind) {
         long compiler = shaderc_compiler_initialize();
         if (compiler == 0L) throw new IllegalStateException("shaderc_compiler_initialize failed");
         long options = shaderc_compile_options_initialize();
@@ -854,9 +864,8 @@ public final class BackendSpikeMain {
                     }
                     ByteBuffer bytes = shaderc_result_get_bytes(result);
                     if (bytes == null) throw new IllegalStateException("shaderc returned no SPIR-V bytes");
-                    ByteBuffer copy = ByteBuffer.allocate(bytes.remaining());
-                    copy.put(bytes).flip();
-                    return copy.asReadOnlyBuffer();
+                    return MemorySegment.ofArray(
+                            MemorySegment.ofBuffer(bytes).toArray(ValueLayout.JAVA_BYTE));
                 } finally {
                     if (result != 0L) shaderc_result_release(result);
                 }

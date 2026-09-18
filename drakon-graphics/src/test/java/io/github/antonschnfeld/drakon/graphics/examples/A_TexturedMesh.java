@@ -17,8 +17,7 @@ import io.github.antonschnfeld.drakon.graphics.render.Renderer;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 import io.github.antonschnfeld.drakon.graphics.shader.*;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.lang.foreign.MemorySegment;
 import java.util.*;
 
 public final class A_TexturedMesh {
@@ -28,10 +27,10 @@ public final class A_TexturedMesh {
         try (GraphicsDevice device = backend.createDevice(GraphicsDeviceConfig.debug())) {
             Buffer vertices = device.createBuffer(
                     new BufferDescriptor(3L * 8 * Float.BYTES, Set.of(BufferUsage.VERTEX)),
-                    ByteBuffer.allocateDirect(3 * 8 * Float.BYTES));
+                    MemorySegment.ofArray(new byte[3 * 8 * Float.BYTES]));
             Buffer indices = device.createBuffer(
                     new BufferDescriptor(3L * Integer.BYTES, Set.of(BufferUsage.INDEX)),
-                    ByteBuffer.allocateDirect(3 * Integer.BYTES));
+                    MemorySegment.ofArray(new byte[3 * Integer.BYTES]));
 
             Texture albedo = device.createTexture(new TextureDescriptor(512, 512, TextureFormat.RGBA8_UNORM, Set.of(TextureUsage.SAMPLED)));
             Sampler sampler = device.createSampler(SamplerDescriptor.linearRepeat());
@@ -103,9 +102,8 @@ public final class A_TexturedMesh {
             code = new GlslShaderCode("#version 450 core\nvoid main() {} // " + label);
         } else if (device.shaderTarget() instanceof VulkanShaderTarget) {
             // The probe validates representation routing, not SPIR-V semantics.
-            ByteBuffer words = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
-            words.putInt(0x07230203).flip(); // SPIR-V magic word
-            code = new SpirvShaderCode(words);
+            code = new SpirvShaderCode(MemorySegment.ofArray(
+                    new byte[] {0x03, 0x02, 0x23, 0x07})); // SPIR-V magic word
         } else {
             throw new IllegalStateException("Unsupported probe shader target: " + device.shaderTarget());
         }

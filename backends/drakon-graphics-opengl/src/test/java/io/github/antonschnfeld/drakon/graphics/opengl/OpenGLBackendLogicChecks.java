@@ -14,7 +14,9 @@ import io.github.antonschnfeld.drakon.graphics.resource.VertexFormat;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexInputRate;
 import io.github.antonschnfeld.drakon.graphics.resource.VertexLayout;
 
-import java.nio.ByteBuffer;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.IdentityHashMap;
 import java.util.List;
 
@@ -180,37 +182,42 @@ public final class OpenGLBackendLogicChecks {
     }
 
     private static void uploadAdaptationPreservesSelectedRanges() {
-        assertUploadAdaptation(ByteBuffer.allocate(8));
-        assertUploadAdaptation(ByteBuffer.allocateDirect(8));
+        assertUploadAdaptation(MemorySegment.ofArray(new byte[8]));
+        try (Arena arena = Arena.ofConfined()) {
+            assertUploadAdaptation(arena.allocate(8));
+        }
     }
 
-    private static void assertUploadAdaptation(ByteBuffer source) {
-        for (int i = 0; i < source.capacity(); i++) source.put(i, (byte) (10 + i));
-        source.position(2).limit(6);
+    private static void assertUploadAdaptation(MemorySegment allocation) {
+        for (long i = 0; i < allocation.byteSize(); i++) {
+            allocation.setAtIndex(ValueLayout.JAVA_BYTE, i, (byte) (10 + i));
+        }
+        MemorySegment source = allocation.asSlice(2, 4);
         OpenGLUploadMemory.withNativeBuffer(source, upload -> {
             require(upload.isDirect(), "OpenGL upload adaptation did not provide native memory");
             require(upload.remaining() == 4, "OpenGL upload adaptation used the wrong range");
             for (int i = 0; i < upload.remaining(); i++) {
                 require(upload.get(i) == (byte) (12 + i), "OpenGL upload bytes changed");
             }
-            require(source.position() == 2, "OpenGL upload changed caller position");
-            require(source.limit() == 6, "OpenGL upload changed caller limit");
         });
-        require(source.position() == 2, "OpenGL upload changed caller position after return");
-        require(source.limit() == 6, "OpenGL upload changed caller limit after return");
     }
 
     private static void bufferWriteSnapshotIsIndependent() {
-        ByteBuffer source = ByteBuffer.allocate(12);
-        for (int i = 0; i < source.capacity(); i++) source.put(i, (byte) (30 + i));
-        source.position(4).limit(12);
-        byte[] snapshot = OpenGLBufferUpdates.snapshot(24, 8, source);
-        require(source.position() == 4, "OpenGL write snapshot changed caller position");
-        require(source.limit() == 12, "OpenGL write snapshot changed caller limit");
-        for (int i = 4; i < 12; i++) source.put(i, (byte) 0);
-        for (int i = 0; i < snapshot.length; i++) {
-            require(snapshot[i] == (byte) (34 + i), "OpenGL write snapshot retained caller storage");
+        MemorySegment snapshot;
+        try (OpenGLCommandMemory commandMemory = new OpenGLCommandMemory();
+                Arena sourceArena = Arena.ofConfined()) {
+            MemorySegment allocation = sourceArena.allocate(12);
+            for (long i = 0; i < allocation.byteSize(); i++) {
+                allocation.setAtIndex(ValueLayout.JAVA_BYTE, i, (byte) (30 + i));
+            }
+            snapshot = OpenGLBufferUpdates.snapshot(commandMemory, 24, 8, allocation.asSlice(4, 8));
+            allocation.fill((byte) 0);
+            for (long i = 0; i < snapshot.byteSize(); i++) {
+                require(snapshot.getAtIndex(ValueLayout.JAVA_BYTE, i) == (byte) (34 + i),
+                        "OpenGL write snapshot retained caller storage");
+            }
         }
+        require(!snapshot.scope().isAlive(), "OpenGL command memory remained alive after retirement");
         expect(IllegalArgumentException.class,
                 () -> OpenGLBufferUpdates.validateRange(16, -4, 4));
         expect(IllegalArgumentException.class,

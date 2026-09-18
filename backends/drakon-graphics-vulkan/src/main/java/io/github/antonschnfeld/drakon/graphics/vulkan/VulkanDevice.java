@@ -13,6 +13,7 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.vulkan.*;
 
 import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
@@ -874,14 +875,14 @@ public final class VulkanDevice implements GraphicsDevice {
     }
 
     @Override
-    public Buffer createBuffer(BufferDescriptor descriptor, ByteBuffer initialData) {
+    public Buffer createBuffer(BufferDescriptor descriptor, MemorySegment initialData) {
         Objects.requireNonNull(initialData, "initialData");
-        return createBufferInternal(Objects.requireNonNull(descriptor, "descriptor"), initialData.duplicate());
+        return createBufferInternal(Objects.requireNonNull(descriptor, "descriptor"), initialData);
     }
 
-    private Buffer createBufferInternal(BufferDescriptor descriptor, ByteBuffer initialData) {
+    private Buffer createBufferInternal(BufferDescriptor descriptor, MemorySegment initialData) {
         requireOpen();
-        if (initialData != null && initialData.remaining() > descriptor.size()) {
+        if (initialData != null && initialData.byteSize() > descriptor.size()) {
             throw new IllegalArgumentException("initial data exceeds buffer size");
         }
         try (Arena arena = Arena.ofConfined()) {
@@ -903,11 +904,11 @@ public final class VulkanDevice implements GraphicsDevice {
                 long memory = allocateMemory(requirements.size(), memoryType, arena);
                 check(vkBindBufferMemory(device, buffer, memory, 0), "vkBindBufferMemory");
 
-                if (initialData != null && initialData.hasRemaining()) {
+                if (initialData != null && initialData.byteSize() != 0L) {
                     PointerBuffer mapped = VulkanFfm.pointers(arena, 1);
                     check(vkMapMemory(device, memory, 0, descriptor.size(), 0, mapped), "vkMapMemory");
                     try {
-                        VulkanFfm.copyToBorrowed(initialData, mapped.get(0), initialData.remaining());
+                        VulkanFfm.copyToBorrowed(initialData, mapped.get(0), initialData.byteSize());
                     } finally {
                         vkUnmapMemory(device, memory);
                     }
@@ -927,15 +928,21 @@ public final class VulkanDevice implements GraphicsDevice {
     }
 
     @Override
-    public Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+    public Texture createTexture(
+            TextureDescriptor descriptor,
+            MemorySegment initialData,
+            ResourceState initialState) {
         Objects.requireNonNull(descriptor, "descriptor");
         Objects.requireNonNull(initialData, "initialData");
         Objects.requireNonNull(initialState, "initialState");
         validateInitialTexture(descriptor, initialData, initialState);
-        return createTextureInternal(descriptor, initialData.duplicate(), initialState);
+        return createTextureInternal(descriptor, initialData, initialState);
     }
 
-    private Texture createTextureInternal(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+    private Texture createTextureInternal(
+            TextureDescriptor descriptor,
+            MemorySegment initialData,
+            ResourceState initialState) {
         requireOpen();
         try (Arena arena = Arena.ofConfined()) {
             VkImageCreateInfo info = VulkanFfm.struct(arena, VkImageCreateInfo.SIZEOF, VkImageCreateInfo.ALIGNOF, VkImageCreateInfo::create)
@@ -990,8 +997,11 @@ public final class VulkanDevice implements GraphicsDevice {
         }
     }
 
-    private void uploadTexture(VulkanTexture texture, ByteBuffer initialData, ResourceState initialState) {
-        long size = initialData.remaining();
+    private void uploadTexture(
+            VulkanTexture texture,
+            MemorySegment initialData,
+            ResourceState initialState) {
+        long size = initialData.byteSize();
         long stagingBuffer = 0L;
         long stagingMemory = 0L;
         VkCommandBuffer commandBuffer = null;
@@ -1094,12 +1104,12 @@ public final class VulkanDevice implements GraphicsDevice {
     }
 
     private static void validateInitialTexture(
-            TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+            TextureDescriptor descriptor, MemorySegment initialData, ResourceState initialState) {
         if (descriptor.format().isDepth()) {
             throw new IllegalArgumentException("CPU initialization of depth textures is not supported");
         }
         long required = textureByteCount(descriptor);
-        if (initialData.remaining() != required) {
+        if (initialData.byteSize() != required) {
             throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
         }
         TextureUsage usage = switch (initialState) {
@@ -1157,12 +1167,15 @@ public final class VulkanDevice implements GraphicsDevice {
         if (!(descriptor.code() instanceof SpirvShaderCode spirv)) {
             throw new IllegalArgumentException("Vulkan backend requires SpirvShaderCode");
         }
-        ByteBuffer code = spirv.code();
-        if ((code.remaining() & 3) != 0) throw new IllegalArgumentException("SPIR-V byte length must be divisible by four");
-        // ShaderCode owns a portable heap snapshot. LWJGL needs an aligned
-        // native pointer, alive until vkCreateShaderModule has copied the code.
+        MemorySegment code = spirv.code();
+        if ((code.byteSize() & 3) != 0) {
+            throw new IllegalArgumentException("SPIR-V byte length must be divisible by four");
+        }
+        // SpirvShaderCode owns an aligned native snapshot. The ByteBuffer view
+        // exists only for the LWJGL pCode boundary.
         try (Arena arena = Arena.ofConfined()) {
-            ByteBuffer nativeCode = VulkanFfm.nativeCopy(arena, code, Integer.BYTES);
+            ByteBuffer nativeCode = VulkanFfm.nativeData(arena, code, Integer.BYTES)
+                    .asByteBuffer();
             VkShaderModuleCreateInfo info = VulkanFfm.struct(arena, VkShaderModuleCreateInfo.SIZEOF, VkShaderModuleCreateInfo.ALIGNOF, VkShaderModuleCreateInfo::create)
                     .sType$Default()
                     .pCode(nativeCode);

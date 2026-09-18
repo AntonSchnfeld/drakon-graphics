@@ -3,10 +3,10 @@ package io.github.antonschnfeld.drakon.graphics.opengl;
 import io.github.antonschnfeld.drakon.graphics.command.*;
 import io.github.antonschnfeld.drakon.graphics.resource.*;
 
+import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.nio.ByteBuffer;
 
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL15C.*;
@@ -21,13 +21,18 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     private final OpenGLDevice device;
     private final boolean validation;
     private final List<OpenGLCommand> commands = new ArrayList<>();
+    private OpenGLCommandMemory commandMemory;
     private boolean rendering;
     private boolean finished;
     private OpenGLGraphicsState graphicsState;
 
-    OpenGLCommandEncoder(OpenGLDevice device, boolean validation) {
+    OpenGLCommandEncoder(
+            OpenGLDevice device,
+            boolean validation,
+            OpenGLCommandMemory commandMemory) {
         this.device = device;
         this.validation = validation;
+        this.commandMemory = commandMemory;
     }
 
     private void requireRecording() {
@@ -468,22 +473,21 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     }
 
     @Override
-    public void writeBuffer(Buffer buffer, long offset, ByteBuffer data) {
+    public void writeBuffer(Buffer buffer, long offset, MemorySegment data) {
         requireRecording();
         Objects.requireNonNull(buffer, "buffer");
         Objects.requireNonNull(data, "data");
         if (rendering) throw new IllegalStateException("writeBuffer is not allowed inside rendering");
         OpenGLBuffer destination = owned(buffer, OpenGLBuffer.class, "buffer");
-        byte[] snapshot = OpenGLBufferUpdates.snapshot(destination.size(), offset, data);
+        MemorySegment snapshot = OpenGLBufferUpdates.snapshot(
+                commandMemory, destination.size(), offset, data);
         commands.add(context -> {
             destination.requireAlive();
             requireWritableBufferState(destination.state);
             int previous = glGetInteger(GL_COPY_WRITE_BUFFER_BINDING);
             try {
                 glBindBuffer(GL_COPY_WRITE_BUFFER, destination.handle);
-                OpenGLUploadMemory.withNativeBuffer(
-                        ByteBuffer.wrap(snapshot),
-                        upload -> glBufferSubData(GL_COPY_WRITE_BUFFER, offset, upload));
+                glBufferSubData(GL_COPY_WRITE_BUFFER, offset, snapshot.asByteBuffer());
             } finally {
                 glBindBuffer(GL_COPY_WRITE_BUFFER, previous);
             }
@@ -586,10 +590,21 @@ final class OpenGLCommandEncoder implements CommandEncoder {
     public CommandList finish() {
         requireRecording();
         if (rendering) throw new IllegalStateException("cannot finish while rendering scope is active");
-        finished = true;
-        OpenGLCommandList result = new OpenGLCommandList(device, commands);
-        commands.clear();
-        return result;
+        OpenGLCommandMemory transferredMemory = commandMemory;
+        try {
+            OpenGLCommandList result = new OpenGLCommandList(
+                    device, commands, transferredMemory);
+            finished = true;
+            commandMemory = null;
+            commands.clear();
+            return result;
+        } catch (RuntimeException | Error failure) {
+            finished = true;
+            commandMemory = null;
+            commands.clear();
+            transferredMemory.close();
+            throw failure;
+        }
     }
 
     @Override
@@ -597,5 +612,7 @@ final class OpenGLCommandEncoder implements CommandEncoder {
         if (finished) return;
         finished = true;
         commands.clear();
+        commandMemory.close();
+        commandMemory = null;
     }
 }

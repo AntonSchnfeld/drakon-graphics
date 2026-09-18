@@ -5,7 +5,7 @@ import io.github.antonschnfeld.drakon.graphics.resource.*;
 import org.lwjgl.vulkan.*;
 
 import java.lang.foreign.Arena;
-import java.nio.ByteBuffer;
+import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -391,34 +391,32 @@ final class VulkanCommandEncoder implements CommandEncoder {
     }
 
     @Override
-    public void writeBuffer(Buffer buffer, long offset, ByteBuffer data) {
+    public void writeBuffer(Buffer buffer, long offset, MemorySegment data) {
         Objects.requireNonNull(buffer, "buffer");
         Objects.requireNonNull(data, "data");
         requireRecording();
         if (rendering) throw new IllegalStateException("writeBuffer is not allowed inside rendering");
         VulkanBuffer destination = device.owned(buffer, VulkanBuffer.class, "buffer");
-        int byteCount = data.remaining();
+        long byteCount = data.byteSize();
         VulkanBufferUpdates.validateRange(destination.size(), offset, byteCount);
         ResourceState state = states.effectiveState(destination);
         requireWritableBufferState(state);
         reference(destination);
 
-        ByteBuffer selected = data.slice();
         recordCommand(() -> {
             recordBufferWriteBarrier(
                     destination, offset, byteCount,
                     VulkanMappings.stageMask(state), VulkanMappings.accessMask(state),
                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
             VulkanBufferUpdates.forEachChunk(offset, byteCount, (chunkOffset, chunkSize) -> {
-                int sourceOffset = Math.toIntExact(chunkOffset - offset);
-                ByteBuffer chunk = selected.duplicate();
-                chunk.position(sourceOffset).limit(sourceOffset + chunkSize);
+                long sourceOffset = chunkOffset - offset;
+                MemorySegment chunk = data.asSlice(sourceOffset, chunkSize);
                 try (Arena arena = Arena.ofConfined()) {
                     vkCmdUpdateBuffer(
                             commandBuffer,
                             destination.handle,
                             chunkOffset,
-                            VulkanFfm.nativeCopy(arena, chunk, Integer.BYTES));
+                            VulkanFfm.nativeData(arena, chunk, Integer.BYTES).asByteBuffer());
                 }
             });
             recordBufferWriteBarrier(

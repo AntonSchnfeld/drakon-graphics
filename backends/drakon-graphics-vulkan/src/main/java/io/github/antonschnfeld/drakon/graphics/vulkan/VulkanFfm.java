@@ -88,21 +88,23 @@ final class VulkanFfm {
                 .asByteBuffer().order(ByteOrder.nativeOrder());
     }
 
-    static ByteBuffer nativeCopy(Arena arena, ByteBuffer source, long alignment) {
-        ByteBuffer selected = source.slice();
-        MemorySegment storage = arena.allocate(selected.remaining(), alignment);
-        storage.copyFrom(MemorySegment.ofBuffer(selected));
-        return storage.asByteBuffer().order(ByteOrder.nativeOrder());
+    static MemorySegment nativeData(Arena arena, MemorySegment source, long alignment) {
+        Objects.requireNonNull(arena, "arena");
+        Objects.requireNonNull(source, "source");
+        if (source.isNative() && source.address() % alignment == 0L) return source;
+        MemorySegment storage = arena.allocate(source.byteSize(), alignment);
+        storage.copyFrom(source);
+        return storage;
     }
 
     @SuppressWarnings("restricted") // Bounds a Vulkan-owned address; this method never acquires ownership.
-    static void copyToBorrowed(ByteBuffer source, long address, long byteCount) {
-        ByteBuffer selected = source.slice();
-        if (selected.remaining() != byteCount) {
+    static void copyToBorrowed(MemorySegment source, long address, long byteCount) {
+        Objects.requireNonNull(source, "source");
+        if (source.byteSize() != byteCount) {
             throw new IllegalArgumentException("source range does not match destination range");
         }
         // Borrowed from vkMapMemory; Vulkan owns the allocation and vkUnmapMemory ends its lifetime.
         MemorySegment mapped = MemorySegment.ofAddress(address).reinterpret(byteCount);
-        mapped.copyFrom(MemorySegment.ofBuffer(selected));
+        mapped.copyFrom(source);
     }
 }

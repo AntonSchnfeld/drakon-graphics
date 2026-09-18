@@ -18,7 +18,9 @@ import io.github.antonschnfeld.drakon.graphics.resource.TextureDescriptor;
 import io.github.antonschnfeld.drakon.graphics.resource.TextureFormat;
 import io.github.antonschnfeld.drakon.graphics.resource.TextureUsage;
 
-import java.nio.ByteBuffer;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -46,15 +48,15 @@ public final class ProbeBufferWriteChecks {
                 Buffer buffer = device.createBuffer(new BufferDescriptor(32, Set.of(BufferUsage.UNIFORM)));
                 CommandEncoder commands = device.createCommandEncoder()) {
             commands.transition(buffer, ResourceState.UNDEFINED, ResourceState.UNIFORM_READ);
-            ByteBuffer source = ByteBuffer.allocate(20);
-            for (int i = 0; i < source.capacity(); i++) source.put(i, (byte) (40 + i));
-            source.position(4).limit(12);
-            int position = source.position();
-            int limit = source.limit();
-            commands.writeBuffer(buffer, 8, source);
-            require(source.position() == position, "writeBuffer changed source position");
-            require(source.limit() == limit, "writeBuffer changed source limit");
-            for (int i = position; i < limit; i++) source.put(i, (byte) 0);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment allocation = arena.allocate(20);
+                for (long i = 0; i < allocation.byteSize(); i++) {
+                    allocation.setAtIndex(ValueLayout.JAVA_BYTE, i, (byte) (40 + i));
+                }
+                MemorySegment source = allocation.asSlice(4, 8);
+                commands.writeBuffer(buffer, 8, source);
+                source.fill((byte) 0);
+            }
 
             try (CommandList list = commands.finish()) {
                 ProbeCommandEncoder.ProbeBufferWrite write =
@@ -117,7 +119,8 @@ public final class ProbeBufferWriteChecks {
                     () -> commands.writeBuffer(huge, Long.MAX_VALUE - 3, bytes(1, 2, 3, 4)));
             expect(IllegalArgumentException.class, () -> commands.writeBuffer(buffer, 2, bytes(1, 2, 3, 4)));
             expect(IllegalArgumentException.class, () -> commands.writeBuffer(buffer, 0, bytes(1, 2, 3)));
-            expect(IllegalArgumentException.class, () -> commands.writeBuffer(buffer, 0, ByteBuffer.allocate(0)));
+            expect(IllegalArgumentException.class,
+                    () -> commands.writeBuffer(buffer, 0, MemorySegment.ofArray(new byte[0])));
         }
     }
 
@@ -198,10 +201,10 @@ public final class ProbeBufferWriteChecks {
         return (ProbeGraphicsDevice) backend.createDevice(GraphicsDeviceConfig.debug());
     }
 
-    private static ByteBuffer bytes(int... values) {
-        ByteBuffer result = ByteBuffer.allocate(values.length);
-        for (int value : values) result.put((byte) value);
-        return result.flip();
+    private static MemorySegment bytes(int... values) {
+        byte[] result = new byte[values.length];
+        for (int i = 0; i < values.length; i++) result[i] = (byte) values[i];
+        return MemorySegment.ofArray(result);
     }
 
     private static void expect(Class<? extends Throwable> type, Runnable operation) {

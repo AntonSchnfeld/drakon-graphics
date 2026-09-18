@@ -88,8 +88,25 @@ commands.beginRendering(renderingInfo);
 commands.endRendering();
 ```
 
-The selected source bytes are captured during recording, so the caller may reuse
-`frameData` immediately after `writeBuffer` returns.
+The complete source segment is captured during recording, so the caller may reuse
+`frameData` or close its backing arena immediately after `writeBuffer` returns.
+Use `segment.asSlice(offset, size)` when only part of an allocation should be
+submitted.
+
+Bulk resource data uses Java's Foreign Function & Memory API. Creation-time data
+is copied before the call returns, so a short-lived native allocation is sufficient:
+
+```java
+try (Arena arena = Arena.ofConfined()) {
+    MemorySegment data = arena.allocate(byteCount);
+    // populate data
+    device.createBuffer(descriptor, data);
+}
+```
+
+For per-frame data, keep an Arena and writable native segments for the lifetime of
+the application renderer, update those segments in place, and close the Arena when
+the renderer closes.
 
 ### Resource states
 

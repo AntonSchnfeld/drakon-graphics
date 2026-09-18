@@ -13,8 +13,10 @@ import io.github.antonschnfeld.drakon.graphics.shader.ShaderTarget;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GLCapabilities;
 
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +49,8 @@ public final class OpenGLDevice implements GraphicsDevice {
     private final long uniformBufferOffsetAlignment;
     private final OpenGLShaderTarget shaderTarget = new OpenGLShaderTarget(4, 3, 430);
     private final List<OpenGLResource> resources = new ArrayList<>();
+    private final java.util.Set<OpenGLCommandMemory> commandMemories =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean closed;
 
     private OpenGLDevice(
@@ -132,14 +136,14 @@ public final class OpenGLDevice implements GraphicsDevice {
     }
 
     @Override
-    public Buffer createBuffer(BufferDescriptor descriptor, ByteBuffer initialData) {
+    public Buffer createBuffer(BufferDescriptor descriptor, MemorySegment initialData) {
         Objects.requireNonNull(initialData, "initialData");
-        return createBufferInternal(Objects.requireNonNull(descriptor, "descriptor"), initialData.duplicate());
+        return createBufferInternal(Objects.requireNonNull(descriptor, "descriptor"), initialData);
     }
 
-    private Buffer createBufferInternal(BufferDescriptor descriptor, ByteBuffer data) {
+    private Buffer createBufferInternal(BufferDescriptor descriptor, MemorySegment data) {
         requireOpen();
-        if (data != null && data.remaining() > descriptor.size()) {
+        if (data != null && data.byteSize() > descriptor.size()) {
             throw new IllegalArgumentException("initial data exceeds buffer size");
         }
         activateCapabilities();
@@ -149,7 +153,7 @@ public final class OpenGLDevice implements GraphicsDevice {
             glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
         } else {
             OpenGLUploadMemory.withNativeBuffer(data, uploadData -> {
-                if (uploadData.remaining() == descriptor.size()) {
+                if (data.byteSize() == descriptor.size()) {
                     glBufferData(GL_ARRAY_BUFFER, uploadData, GL_STATIC_DRAW);
                 } else {
                     glBufferData(GL_ARRAY_BUFFER, descriptor.size(), GL_DYNAMIC_DRAW);
@@ -168,15 +172,21 @@ public final class OpenGLDevice implements GraphicsDevice {
     }
 
     @Override
-    public Texture createTexture(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+    public Texture createTexture(
+            TextureDescriptor descriptor,
+            MemorySegment initialData,
+            ResourceState initialState) {
         Objects.requireNonNull(descriptor, "descriptor");
         Objects.requireNonNull(initialData, "initialData");
         Objects.requireNonNull(initialState, "initialState");
         validateInitialTexture(descriptor, initialData, initialState);
-        return createTextureInternal(descriptor, initialData.duplicate(), initialState);
+        return createTextureInternal(descriptor, initialData, initialState);
     }
 
-    private Texture createTextureInternal(TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+    private Texture createTextureInternal(
+            TextureDescriptor descriptor,
+            MemorySegment initialData,
+            ResourceState initialState) {
         requireOpen();
         activateCapabilities();
         int handle = glGenTextures();
@@ -215,12 +225,12 @@ public final class OpenGLDevice implements GraphicsDevice {
     }
 
     private static void validateInitialTexture(
-            TextureDescriptor descriptor, ByteBuffer initialData, ResourceState initialState) {
+            TextureDescriptor descriptor, MemorySegment initialData, ResourceState initialState) {
         if (descriptor.format().isDepth()) {
             throw new IllegalArgumentException("CPU initialization of depth textures is not supported");
         }
         long required = textureByteCount(descriptor);
-        if (initialData.remaining() != required) {
+        if (initialData.byteSize() != required) {
             throw new IllegalArgumentException("initial data must contain exactly " + required + " bytes");
         }
         switch (initialState) {
@@ -442,7 +452,13 @@ public final class OpenGLDevice implements GraphicsDevice {
     @Override
     public CommandEncoder createCommandEncoder() {
         requireOpen();
-        return new OpenGLCommandEncoder(this, config.validation());
+        OpenGLCommandMemory memory = new OpenGLCommandMemory(this);
+        commandMemories.add(memory);
+        return new OpenGLCommandEncoder(this, config.validation(), memory);
+    }
+
+    void releaseCommandMemory(OpenGLCommandMemory memory) {
+        commandMemories.remove(memory);
     }
 
     @Override
@@ -476,6 +492,7 @@ public final class OpenGLDevice implements GraphicsDevice {
                 OpenGLResource resource = resources.get(i);
                 if (!resource.isClosed()) resource.close();
             }
+            for (OpenGLCommandMemory memory : List.copyOf(commandMemories)) memory.close();
         } finally {
             if (nativeDebug != null) nativeDebug.close();
             closed = true;

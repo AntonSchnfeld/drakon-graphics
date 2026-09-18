@@ -1,7 +1,5 @@
 package io.github.antonschnfeld.drakon.graphics.spike;
 
-import java.nio.ByteBuffer;
-
 /** Minimal column-major matrix math for the real-backend 3D spike. */
 final class ThreeDMath {
     private ThreeDMath() {}
@@ -116,7 +114,7 @@ final class ThreeDMath {
         return result;
     }
 
-    static void put(ByteBuffer destination, float[] matrix) {
+    static void put(SegmentWriter destination, float[] matrix) {
         requireMatrix(matrix, "matrix");
         for (float value : matrix) destination.putFloat(value);
     }
